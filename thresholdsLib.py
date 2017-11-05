@@ -26,7 +26,7 @@ from arcpy.sa import *
 
 def get_thresholds(bioregion, stage, landcover, field, unit):
   if unit == "Meters":
-    ground_ht_threshold = 0.6096
+    ground_ht_threshold = 60.96 #0.6096m * 100
   elif unit == "Feet":
     ground_ht_threshold = 2
   #returns list of values for index based on input name
@@ -128,37 +128,17 @@ def get_thresholds(bioregion, stage, landcover, field, unit):
         return [imp, veg]
 
       elif field == "S1_ndwi":
-        imp = "x >= 0"  #[0.24, 0.91]
-        veg = "x <= -80" #[-0.41, 0.18]
+        imp = "x >= 20"  #[0.24, 0.91]
+        veg = "x <= -100" #[-0.41, 0.18]
         return [imp, veg]
       
       elif field == "S1_gndv":
-        imp = "x <= -30"  #[-0.94, -0.17]
-        veg = "x >= 160" #[-0.3, 0.38]
+        imp = "x <= -50"  #[-0.94, -0.17]
+        veg = "x >= 0" #[-0.3, 0.38]
         return [imp, veg]
 
       elif field == "S1_osav":
-        imp = "x <= 0"  #[-0.94, -0.25]
+        imp = "x <= -400"  #[-0.94, -0.25]
         veg = "x >= 200" #[-0.15, 0.76]
         return [imp, veg]
-
-    elif stage == "S2":
-      if landcover == "vegetation":
-        if field == "S2_heig":
-          grass = "x <= "+str(ground_ht_threshold)
-          shrub = "x <= "+str(3*ground_ht_threshold)
-          tree = "x > "+str(3*ground_ht_threshold)
-          return [grass, shrub, tree]   
-      
-        elif field == "S2":
-          return("def landcover(a):\\n"+
-                 "    return a "
-                 )
-
-      elif landcover == "impervious":
-        
-        if field == "S2_heig":
-          path = "x <= "+str(ground_ht_threshold)
-          building = "x > "+str(ground_ht_threshold)
-          return [path, building]
       
