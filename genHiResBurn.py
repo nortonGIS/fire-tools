@@ -232,6 +232,7 @@ bnd_zones = os.path.join(inputs, input_bnd) # Bounding box for each tile
 S1_classified = os.path.join(outputs, "S1_classified.shp")
 classified = os.path.join(outputs, "classified.shp")
 analysis_area = bnd_zones  # analysis area/ area of interest
+used_tiles = os.path.join(outputs, "fishnet_tiles.shp")
 dem = os.path.join(outputs, "dem.tif")  # Resampled DEM in native units
 heights = os.path.join(outputs, "heights.tif")  # Resampled heights in native units
 scaled_heights = os.path.join(outputs, "scaled_heights.tif")  # Heights in project units
@@ -333,6 +334,8 @@ def align():
   arcpy.DefineProjection_management(naip, projection)
   bands = ["Band_1","Band_2","Band_3","Band_4"] # NAIP has 4 bands (in increasing order) B,G,R,NIR
 
+  arcpy.env.snapRaster = naip
+
   # Create a fitted, resampled boundary
   text = "Creating a boundary based on resampled NAIP imagery extent."
   generateMessage(text)
@@ -342,6 +345,16 @@ def align():
   arcpy.DefineProjection_management(bnd_zones_rast, projection)
   arcpy.RasterToPolygon_conversion(bnd_zones_rast, bnd_zones, "NO_SIMPLIFY", "Value")
 
+  #make fishnet with 1km x 1km
+  analysis_area = os.path.join(outputs, "fishnet.shp")
+
+  extent = naip.extent
+  origin_coord = str(extent.XMin)+ " " +str(extent.YMin)
+  y_axis_coord = str(extent.YMin)+ " " +str(extent.YMax)
+  cell_width = 1000
+  cell_height = 1000
+  corner_coord = str(extent.XMax)+ " " +str(extent.YMax)
+  arcpy.CreateFishnet_management(analysis_area, origin_coord, y_axis_coord, cell_width, cell_height, "", "", corner_coord, "NO_LABELS", "", "POLYGON")  
 
 
    #-----------------------------------------------
@@ -417,8 +430,6 @@ def align():
   text = "Resampling heights."
   generateMessage(text)
 
-
-  arcpy.env.snapRaster = naip
   factor = float(cell_size)/float(scale_naip) # scale naiip
   arcpy.Resample_management(raw_heights, heights, str(scale_naip) + " " + str(scale_naip), "BILINEAR") # Bilinear Interpolation reduce image distortion when scaling.It linearly interpolates the nearest 4 pixels
   this = Aggregate(heights, factor, "MEDIAN") # Aggregate cells by maximum to preserve max heights
@@ -459,8 +470,6 @@ def align():
     bnd_rast = os.path.join(scratchgdb, "bnd_rast")
     bands = ["Band_1","Band_2","Band_3","Band_4"]
     pipe_bands = []
-    global analysis_area
-    analysis_area = pipe_buffer
 
     # Clip pipeline to study area, buffer pipeline
     arcpy.Clip_analysis(pipeline, bnd_zones, pipe_seg)
@@ -472,10 +481,28 @@ def align():
     this.save(pipe_buffer_clip)
     arcpy.RasterToPolygon_conversion(pipe_buffer_clip, pipe_buffer, "NO_SIMPLIFY")
 
+    # determine what tiles the pipeline falls within
+    pipe_in_tile = []
+    searchcursor = arcpy.SearchCursor(analysis_area)
+    tiles = searchcursor.next()
+    while tiles:
+      tile_num = tiles.getValue("FID")
+      tile = os.path.join(scratchgdb, "tile_"+str(tile_num))
+      pipe_tile = os.path.join(scratchgdb, "pipe_tile_"+str(tile_num))
+      where_clause = "FID = " + str(tile_num)
+
+      arcpy.Select_analysis(analysis_area, tile, where_clause)
+      arcpy.Clip_analysis(pipe_buffer, tile, pipe_tile)
+      if arcpy.management.GetCount(pipe_tile)[0] != "0":
+        pipe_in_tile.extend([pipe_tile])
+    arcpy.Merge_management(pipe_in_tile, used_tiles)
+
+    global analysis_area
+    analysis_area = used_tiles
 
 
     # Extract NAIP and heights to pipeline buffer
-    this = ExtractByMask(naip, pipe_buffer)
+    this = ExtractByMask(naip, analysis_area)
     this.save(naip_pipe)
 
     for band in bands:
@@ -487,7 +514,7 @@ def align():
     arcpy.CompositeBands_management(pipe_bands, naip)
     arcpy.DefineProjection_management(naip, projection)
 
-    this = ExtractByMask(heights, pipe_buffer)
+    this = ExtractByMask(heights, analysis_area)
     this.save(height_pipe)
     outRas = Con(IsNull(height_pipe),0, Raster(height_pipe))
     outRas.save(heights)
@@ -498,11 +525,11 @@ if align_inputs == "Yes":
 #-----------------------------------------------
 #-----------------------------------------------
 
-
 #-----------------------------------------------
 #-----------------------------------------------
 # Iterate through all zones (if possible)
 
+landscape_analysis = []
 searchcursor = arcpy.SearchCursor(analysis_area)
 zones = searchcursor.next()
 while zones:
@@ -1144,7 +1171,13 @@ while zones:
   if classify_landscape == "Yes":
     classify_objects()
   # iterate through next zone if possible
+  landscape_analysis.extend([landscape_fc])
   zones = searchcursor.next()
+
+if len(landscape_analysis) > 0:
+  text = "Creating contiguous land cover for entire analysis area."
+  generateMessage(text)
+  arcpy.Merge_management(landscape_analysis, classified_landscape)
   #-----------------------------------------------
   #-----------------------------------------------
 
@@ -1206,10 +1239,10 @@ def fuels():
   for field in land_cover_fields:
     input_field = field[1]
     output_field = field[0]
-    arcpy.AddField_management(landscape_fc, output_field, "INTEGER")
+    arcpy.AddField_management(classified_landscape, output_field, "INTEGER")
     fxn = "classify(!"+input_field+"!)"
     label_class = classify(model, output_field)
-    arcpy.CalculateField_management(landscape_fc, output_field, fxn, "PYTHON_9.3", label_class)
+    arcpy.CalculateField_management(classified_landscape, output_field, fxn, "PYTHON_9.3", label_class)
 
   #-----------------------------------------------
   #-----------------------------------------------
@@ -1249,7 +1282,7 @@ def LCP():
 
       # Selecting layer and converting to raster
       if layer in fuel_lst:
-        arcpy.Select_analysis(landscape_fc, temp, where_clause)
+        arcpy.Select_analysis(classified_landscape, temp, where_clause)
         arcpy.PolygonToRaster_conversion(temp, layer, temp_raster, "CELL_CENTER", "",dem)
       elif layer in elevation_lst:
 
@@ -1277,7 +1310,7 @@ def LCP():
       generateMessage(text)
 
   # Coding note: Check to see that lists are concatenated
-  convertToAscii(landscape_fc, fuel_lst + elevation_lst)
+  convertToAscii(classified_landscape, fuel_lst + elevation_lst)
 
   #-----------------------------------------------
   #-----------------------------------------------
@@ -1408,11 +1441,11 @@ def burn_obia():
     #-----------------------------------------------
     #-----------------------------------------------
     # Calculate zonal max and join to each objects
-    arcpy.CalculateField_management(landscape_fc, "JOIN", "[FID]+1")
-    z_table = ZonalStatisticsAsTable(landscape_fc, "JOIN", burn, outTable, "NODATA", "MAXIMUM")
+    arcpy.CalculateField_management(classified_landscape, "JOIN", "[FID]+1")
+    z_table = ZonalStatisticsAsTable(classified_landscape, "JOIN", burn, outTable, "NODATA", "MAXIMUM")
     arcpy.AddField_management(outTable, metric, "FLOAT")
     arcpy.CalculateField_management(outTable, metric, "[MAX]")
-    one_to_one_join(landscape_fc, outTable, metric, "FLOAT")
+    one_to_one_join(classified_landscape, outTable, metric, "FLOAT")
     #-----------------------------------------------
     #-----------------------------------------------
 
@@ -1444,11 +1477,11 @@ def MXD():
   df = arcpy.mapping.ListDataFrames(mxd, "Layers")[0]
 
   # Layers
-  symbol_layers = [landscape_fc, pipeline]
+  symbol_layers = [classified_landscape, pipeline]
   classified_layers = ["landcover"]#, "fli", "ros", "fml"]
   layers = [dem, scaled_dem, heights, scaled_heights, raw_naip, naip]
 
-  fields = [f.name for f in arcpy.ListFields(landscape_fc)]
+  fields = [f.name for f in arcpy.ListFields(classified_landscape)]
   for field in fields:
     if field in burn_metrics:
       classified_layers.extend([field])
@@ -1457,7 +1490,7 @@ def MXD():
   # Symbology
   #df_lst = []
   for symbol in classified_layers:
-    layer = arcpy.mapping.Layer(landscape_fc)
+    layer = arcpy.mapping.Layer(classified_landscape)
     symbology = os.path.join(symbology_path, symbol+".lyr")
     symbologyFields = ["VALUE_FIELD", "#", "S2"],
     arcpy.ApplySymbologyFromLayer_management(layer, symbology)#, symbologyFields)
