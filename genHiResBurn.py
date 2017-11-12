@@ -27,16 +27,16 @@
 #-------------------------------------------------------------------------------
 #-------------------------------------------------------------------------------
 # USER LOG
-date = "11_5"
+date = "11_11"
 # Summary
 #
 #
 #
 
 # Geographic Data
-location_name = "Crockett"
-bioregion = "Richmond" #[Tahoe, Richmond, Grape_Vine]
-projection = "SPIII"  #["UTMZ10", "UTMZ11"]
+location_name = "Colfax2Reno"
+bioregion = "Tahoe" #[Tahoe, Richmond, Grape_Vine]
+projection = "UTMZ10"  #["UTMZ10", "UTMZ11"]
 
 # Settings
 coarsening_size = "5" #meters
@@ -62,8 +62,8 @@ burn_metrics = ["fli", "fml", "ros"]
 #-----------------------------------------------
 #-----------------------------------------------
 process_lidar = "No"
-align_inputs = "No"
-pipe_analysis = "No"
+align_inputs = "Yes"
+pipe_analysis = "Yes"
 create_obia = "Yes"
 classify_landscape = "Yes"
 run_svm = "Yes"
@@ -569,8 +569,10 @@ while zones:
     where_clause = "Shape_Area > " + str(min_cell_area)
 
     # Create masks for ground and nonground features according to ground_ht_threshold
-    
-    ground_ht_threshold = 0.6096
+    if unit == "Meters":
+      ground_ht_threshold = 0.6096
+    elif unit == "Feet":
+      ground_ht_threshold = 2
 
     mask = SetNull(Int(heights_zone),Int(heights_zone),"VALUE > " + str(ground_ht_threshold))
     arcpy.RasterToPolygon_conversion(mask, ground_mask_raw, "NO_SIMPLIFY", "VALUE", )
@@ -672,9 +674,9 @@ while zones:
     for ie in created_enhancements_1m:
       field = image_enhancements.pop(0)
       outTable = os.path.join(scratchgdb, "zonal_"+os.path.basename(ie))
-      z_stat = ZonalStatisticsAsTable(sms_fc, "JOIN", ie, outTable, "NODATA", "MEDIAN")
+      z_stat = ZonalStatisticsAsTable(sms_fc, "JOIN", ie, outTable, "NODATA", "MAJORITY")
       arcpy.AddField_management(outTable, field, "INTEGER")
-      arcpy.CalculateField_management(outTable, field, "[MEDIAN]")
+      arcpy.CalculateField_management(outTable, field, "[MAJORITY]")
       one_to_one_join(sms_fc, outTable, field, "INTEGER")
 
     arcpy.DefineProjection_management(sms_fc, projection)
@@ -882,7 +884,7 @@ while zones:
           generateMessage(text)
 
           confused_ie_lst = []
-          bands_5m = createImageEnhancements(band_lst, naip, scaled_heights, "5m", scratchgdb)
+          bands_5m = createImageEnhancements(band_lst, naip, heights, "5m", scratchgdb)
           for ie in bands_5m:
             band = os.path.basename(ie)
             confused_ie = os.path.join(scratchgdb, "confused_"+band)
@@ -1021,6 +1023,7 @@ while zones:
         for primitive in class_structure:
           landcover = primitive[0]
           s1_heights = os.path.join(scratchgdb, landcover+"_heights")
+          heights_zone = os.path.join(outputs, "height_zone_"+str(zone_num)+".tif")
           primitive_mask = os.path.join(outputs, landcover+"_"+str(zone_num)+".shp")
           cm_heights = os.path.join(scratchgdb, "cm_heights")
 
@@ -1028,7 +1031,7 @@ while zones:
           generateMessage(text)
 
           arcpy.Select_analysis(S1_classified, primitive_mask, "S1 = '"+landcover+"'")
-          this = Int(Float(heights_zone)*100)
+          this = Int(Float(heights)*100)
           this.save(cm_heights)
           this = ExtractByMask(cm_heights, primitive_mask)
           this.save(s1_heights)
@@ -1203,10 +1206,10 @@ def fuels():
   for field in land_cover_fields:
     input_field = field[1]
     output_field = field[0]
-    arcpy.AddField_management(classified, output_field, "INTEGER")
+    arcpy.AddField_management(landscape_fc, output_field, "INTEGER")
     fxn = "classify(!"+input_field+"!)"
     label_class = classify(model, output_field)
-    arcpy.CalculateField_management(classified, output_field, fxn, "PYTHON_9.3", label_class)
+    arcpy.CalculateField_management(landscape_fc, output_field, fxn, "PYTHON_9.3", label_class)
 
   #-----------------------------------------------
   #-----------------------------------------------
@@ -1246,17 +1249,17 @@ def LCP():
 
       # Selecting layer and converting to raster
       if layer in fuel_lst:
-        arcpy.Select_analysis(classified, temp, where_clause)
-        arcpy.PolygonToRaster_conversion(temp, layer, temp_raster, "CELL_CENTER", "", scaled_dem)
+        arcpy.Select_analysis(landscape_fc, temp, where_clause)
+        arcpy.PolygonToRaster_conversion(temp, layer, temp_raster, "CELL_CENTER", "",dem)
       elif layer in elevation_lst:
 
         # Calculating elevation derived layers
         if layer == "slope":
-          arcpy.Slope_3d(scaled_dem, temp_raster, "DEGREE")
+          arcpy.Slope_3d(dem, temp_raster, "DEGREE")
         elif layer == "aspect":
-          arcpy.Aspect_3d(scaled_dem, temp_raster)
+          arcpy.Aspect_3d(dem, temp_raster)
         elif layer == "elevation":
-          temp_raster = scaled_dem
+          temp_raster = dem
 
       # Preparing raster for LCP specifications
       arcpy.CopyRaster_management(temp_raster, final, "", "", "0", "NONE", "NONE", "32_BIT_SIGNED","NONE", "NONE", "GRID", "NONE")
@@ -1274,7 +1277,7 @@ def LCP():
       generateMessage(text)
 
   # Coding note: Check to see that lists are concatenated
-  convertToAscii(classified, fuel_lst + elevation_lst)
+  convertToAscii(landscape_fc, fuel_lst + elevation_lst)
 
   #-----------------------------------------------
   #-----------------------------------------------
@@ -1405,11 +1408,11 @@ def burn_obia():
     #-----------------------------------------------
     #-----------------------------------------------
     # Calculate zonal max and join to each objects
-    arcpy.CalculateField_management(classified, "JOIN", "[FID]+1")
-    z_table = ZonalStatisticsAsTable(classified, "JOIN", burn, outTable, "NODATA", "MAXIMUM")
+    arcpy.CalculateField_management(landscape_fc, "JOIN", "[FID]+1")
+    z_table = ZonalStatisticsAsTable(landscape_fc, "JOIN", burn, outTable, "NODATA", "MAXIMUM")
     arcpy.AddField_management(outTable, metric, "FLOAT")
     arcpy.CalculateField_management(outTable, metric, "[MAX]")
-    one_to_one_join(classified, outTable, metric, "FLOAT")
+    one_to_one_join(landscape_fc, outTable, metric, "FLOAT")
     #-----------------------------------------------
     #-----------------------------------------------
 
@@ -1441,11 +1444,11 @@ def MXD():
   df = arcpy.mapping.ListDataFrames(mxd, "Layers")[0]
 
   # Layers
-  symbol_layers = [classified, pipeline]
+  symbol_layers = [landscape_fc, pipeline]
   classified_layers = ["landcover"]#, "fli", "ros", "fml"]
   layers = [dem, scaled_dem, heights, scaled_heights, raw_naip, naip]
 
-  fields = [f.name for f in arcpy.ListFields(classified)]
+  fields = [f.name for f in arcpy.ListFields(landscape_fc)]
   for field in fields:
     if field in burn_metrics:
       classified_layers.extend([field])
@@ -1454,7 +1457,7 @@ def MXD():
   # Symbology
   #df_lst = []
   for symbol in classified_layers:
-    layer = arcpy.mapping.Layer(classified)
+    layer = arcpy.mapping.Layer(landscape_fc)
     symbology = os.path.join(symbology_path, symbol+".lyr")
     symbologyFields = ["VALUE_FIELD", "#", "S2"],
     arcpy.ApplySymbologyFromLayer_management(layer, symbology)#, symbologyFields)
