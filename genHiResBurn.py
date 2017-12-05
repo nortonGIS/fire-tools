@@ -27,15 +27,15 @@
 #-------------------------------------------------------------------------------
 #-------------------------------------------------------------------------------
 # USER LOG
-date = "11_11"
+date = "12_4"
 # Summary
 #
 #
 #
 
 # Geographic Data
-location_name = "Colfax2Reno"
-bioregion = "Tahoe" #[Tahoe, Richmond, Grape_Vine]
+location_name = "Tubbs"
+bioregion = "Richmond" #[Tahoe, Richmond, Grape_Vine]
 projection = "UTMZ10"  #["UTMZ10", "UTMZ11"]
 
 # Settings
@@ -55,7 +55,7 @@ input_pipeline = "pipeline.shp"
 input_fuel_moisture = "fuel_moisture.fms"
 input_wind = ""
 input_weather = ""
-burn_metrics = ["fli", "fml", "ros"]
+burn_metrics = ["fml", "ros", "fi"]
 #-----------------------------------------------
 #-----------------------------------------------
 
@@ -64,9 +64,9 @@ burn_metrics = ["fli", "fml", "ros"]
 process_lidar = "No"
 align_inputs = "No"
 pipe_analysis = "No"
-create_obia = "Yes"
-classify_landscape = "Yes"
-run_svm = "Yes"
+create_obia = "No"
+classify_landscape = "No"
+run_svm = "No"
 classify_fuels = "Yes"
 create_LCP = "Yes"
 run_FlamMap = "No"
@@ -96,7 +96,7 @@ create_MXD]
 
 #-----------------------------------------------
 #-----------------------------------------------
-# Import modules
+# Import 
 import arcpy
 import os
 import sys
@@ -201,7 +201,7 @@ from thresholdsLib import get_thresholds
 inputs = os.path.join(current_project, "01_Inputs")
 outputs = os.path.join(current_project, "02_Unmitigated_Outputs")
 scratchws = os.path.join(current_project, "04_Scratch")
-scratchgdb = os.path.join(scratchws, "Scratch2.gdb")
+scratchgdb = os.path.join(scratchws, "Scratch.gdb")
 dll_path = os.path.join(current_project, "05_Scripts")
 arcpy.env.workspace = scratchgdb
 arcpy.env.overwriteOutput = True
@@ -214,6 +214,7 @@ raw_naip = os.path.join(inputs, input_naip) # NAIP Imagery at 1m res
 lasd = os.path.join(inputs, input_las)
 raw_heights = os.path.join(inputs, input_heights) # Heights
 raw_dem = os.path.join(inputs, input_dem) # DEM
+raw_dsm = os.path.join(inputs, "dsm.tif") 
 pipeline = os.path.join(inputs, input_pipeline) # Pipeline
 fuel_moisture = os.path.join(inputs, input_fuel_moisture) # Fuel Moisture
 wind = os.path.join(inputs, input_wind) # Wind
@@ -230,14 +231,15 @@ bnd_zones = os.path.join(inputs, input_bnd) # Bounding box for each tile
 
 # Outputs
 S1_classified = os.path.join(outputs, "S1_classified.shp")
-classified_landscape = os.path.join(outputs, "classified_landscape.shp")
+classified_landscape = os.path.join(outputs, "classified.shp")
 
-used_tiles = os.path.join(outputs, "fishnet_tiles.shp")
+used_tiles = os.path.join(outputs, "bnd_fishnet.shp")
 analysis_area = used_tiles #bnd_zones  # analysis area/ area of interest
 dem = os.path.join(outputs, "dem.tif")  # Resampled DEM in native units
 heights = os.path.join(outputs, "heights.tif")  # Resampled heights in native units
 scaled_heights = os.path.join(outputs, "scaled_heights.tif")  # Heights in project units
 scaled_dem = os.path.join(outputs, "scaled_dem.tif")  # DEM in project units
+canopy_cover_tif = os.path.join(outputs,"canopy_cover.tif")
 tiles_used = 1
 
 
@@ -378,58 +380,34 @@ def align():
     text = "Creating heights."
     generateMessage(text)
 
-    last_pulse = os.path.join(inputs, "FP.lasd")
-    first_pulse_classes = ["1"]
-    arcpy.MakeLasDatasetLayer_management(lasd, first_pulse, first_pulse_classes)
+    las_dem = os.path.join(scratchws, "las_dem.tif")
+    las_dsm = os.path.join(scratchws, "las_dsm.tif")
+    temp = os.path.join(scratchws, "temp.tif")
 
-    text = "First Pulses separated."
-    generateMessage(text)
-
-    # Create Last Pulse lasd
-    last_pulse = os.path.join(inputs, "LP.lasd")
-    last_pulse_classes = ["2"]
-    arcpy.MakeLasDatasetLayer_management(lasd, last_pulse, last_pulse_classes)
-    text = "Last Pulses separated."
-    generateMessage(text)
-
-    arcpy.LasDatasetToRaster_conversion(lasd, dem, "ELEVATION", "BINNING MINIMUM LINEAR", "FLOAT", "CELLSIZE", cell_size, "")
+    arcpy.LasDatasetToRaster_conversion(lasd, las_dem, "ELEVATION", "BINNING MINIMUM LINEAR", "FLOAT", "CELLSIZE", cell_size, "")
+    this = Float(las_dem)*0.3048
+    this.save(temp)
+    arcpy.ProjectRaster_management(temp, raw_dem, projection, "BILINEAR")
     #
     # Create DSM
-    arcpy.LasDatasetToRaster_conversion(lasd, dsm, "ELEVATION", "BINNING MAXIMUM SIMPLE", "FLOAT", "CELLSIZE", cell_size, "")
+    arcpy.LasDatasetToRaster_conversion(lasd, las_dsm, "ELEVATION", "BINNING MAXIMUM SIMPLE", "FLOAT", "CELLSIZE", cell_size, "")
+    this = Float(las_dsm)*0.3048
+    this.save(temp)
+    arcpy.ProjectRaster_management(temp, raw_dsm, projection, "BILINEAR")
 
 
     # Create Heights
     hts_interm1 = os.path.join(scratchws,"hts_interm1.tif")
     hts_interm2 = os.path.join(scratchws,"hts_interm2.tif")
+    heights_sp = os.path.join(scratchws, "hts_sp.tif")
+    heights = os.path.join(inputs,"heights.tif")
 
-    ht = Float(dsm)-Float(dem)
+    ht = Float(raw_dsm)-Float(raw_dem)
     ht = Con(IsNull(Float(ht)), 0, Float(ht))
     ht = Con(Float(ht) < 0, 0, Float(ht))
-    heights = SetNull(Float(ht),Float(ht),"VALUE > 350")                 # Minimum "Cloud" heights defined here.  NOTE UNITS
-    if arcpy.GetRasterProperties_management(ht,"ANYNODATA").getOutput(0):
-        arcpy.AddMessage("Interpolating under clouds/birds.")
-        ht.save(hts_interm1)
-        ht.save(hts_interm2)
-        del ht
-        cloudrast = os.path.join(scratchws,"cloudrast")
-        arcpy.gp.Reclassify_sa(hts_interm1, "VALUE", "0 500 NODATA;NODATA 1", cloudrast, "DATA")
-        cloudpts = os.path.join(scratchws,"cloudpts")
-        arcpy.RasterToPoint_conversion(cloudrast,cloudpts,"VALUE")
-        cloudpts_buf30 = os.path.join(scratchws,"cloudptsbuf30")
-        arcpy.Buffer_analysis(cloudpts, cloudpts_buf30, "30 Meters", "FULL", "ROUND", "ALL", "", "PLANAR")
-        nocloudmask = ExtractByMask(hts_interm2,cloudpts_buf30)
-        interppts = os.path.join(scratchws,"interppts")
-        arcpy.RasterToPoint_conversion(nocloudmask, interppts,"")
-        NNinterp = os.path.join(scratchws,"NNinterp")
-        arcpy.gp.NaturalNeighbor_sa(interppts, "grid_code", NNinterp, hts_interm2)
-        arcpy.MosaicToNewRaster_management(hts_interm2+";"+NNinterp, inputs,"heights.tif", "", "32_BIT_FLOAT", "", "1", "FIRST", "FIRST")
-        arcpy.AddMessage("heights.tif created in Outputs folder.")
-    else:
-        ht.save(heights)
+    ht.save(heights_sp)
+    arcpy.ProjectRaster_management(heights_sp, heights, projection, "BILINEAR")
 
-    #
-    # Create Boundary
-    heights = os.path.join(inputs,"heights.tif")
 
   if process_lidar == "Yes":
 
@@ -545,18 +523,21 @@ if align_inputs == "Yes":
 # Iterate through all zones (if possible)
 tot_num_tiles = arcpy.management.GetCount(analysis_area)[0]
 
-
 landscape_analysis = []
 searchcursor = arcpy.SearchCursor(analysis_area)
 zones = searchcursor.next()
 while zones:
   zone_num = zones.getValue("FID")
-  if zone_num <= 61:  #No 31,32
+  if zone_num < -1:  #No 31,32
     #If tile is created already, skip to next in queue
     zones = searchcursor.next()
 
   else:
     sms_fc = os.path.join(scratchgdb, "sms_fc_"+str(zone_num))
+    #if zone_num == 33:
+    scratchgdb = os.path.join(scratchws, "Scratch.gdb")
+    #else:
+    #  scratchgdb = os.path.join(scratchws, "Scratch2.gdb")
     landscape_fc = os.path.join(scratchgdb, "landscape_fc_"+str(zone_num))
 
     def obia():
@@ -657,7 +638,7 @@ while zones:
       #-----------------------------------------------
       #-----------------------------------------------
       # Segment each surface separately using SMS
-      spectral_detail = 10
+      spectral_detail = 20
       spatial_detail = 20
       min_seg_size = 1
 
@@ -1143,7 +1124,7 @@ while zones:
                   min_seg_size = 1
                   s2 = "shrub"
 
-                  this = Con((Int(s1_heights)>30.48) & (Int(s1_heights)<=182.88), 1)
+                  this = Con((Int(s1_heights)>30.48) & (Int(s1_heights)<=304.8), 1)
 
                 elif stage == "tree":
                   
@@ -1152,7 +1133,7 @@ while zones:
                   min_seg_size = 1
                   s2 = "tree"
 
-                  this = Con(Int(s1_heights)>182.88, 1)
+                  this = Con(Int(s1_heights)>304.8, 1)
 
                 elif stage == "path":
                   
@@ -1206,7 +1187,7 @@ while zones:
 
           text = "Creating contiguous land cover."
           generateMessage(text)
-
+          
           arcpy.Merge_management(features, landscape_fc)
           # Update Join IDs
           arcpy.AddField_management(landscape_fc, "JOIN", "INTEGER")
@@ -1230,13 +1211,20 @@ while zones:
     if classify_landscape == "Yes":
       classify_objects()
     # iterate through next zone if possible
-    landscape_analysis.extend([landscape_fc])
+    landscape_analysis.append(landscape_fc)
     zones = searchcursor.next()
 
 if len(landscape_analysis) > 0:
-  text = "Creating contiguous land cover for entire analysis area."
+  text = "Creating contiguous land cover for entire analysis area (joining tiles)."
   generateMessage(text)
+
   arcpy.Merge_management(landscape_analysis, classified_landscape)
+  tree_cover = os.path.join(scratchgdb, "tree_cover")
+  canopycover = os.path.join(scratchgdb, "canopycover")  
+
+  where_clause = "S2 = 'tree'"
+  arcpy.Select_analysis(classified_landscape, tree_cover, where_clause)
+  arcpy.Dissolve_management(tree_cover, canopycover)
   #-----------------------------------------------
   #-----------------------------------------------
 
@@ -1248,7 +1236,41 @@ def fuels():
   newProcess(text)
 
   # Variables
-  land_cover_fields = [["fuel", "S2"], ["canopy", "S2"], ["stand", "height"]]
+  land_cover_fields = [["fuel", "S2"], ["stand", "height"]]
+
+  # ------------------------------------------------------------------------------
+  # Canopy Cover
+  # ------------------------------------------------------------------------------
+  text = "Calculating Canopy Cover (%)."
+  generateMessage(text)
+  # Create FP.lasd
+  FP_lasd = os.path.join(scratchws, "FP.lasd")
+  arcpy.MakeLasDatasetLayer_management(lasd,FP_lasd,[0,1,3,4,5,6,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31],"","","","","")
+
+  #
+  # Create LP.lasd
+  LP_lasd = os.path.join(scratchws, "LP.lasd")
+  arcpy.MakeLasDatasetLayer_management(lasd,LP_lasd,[1,2,8,10,21,22],"","","","","")
+  #
+  # Create FP_count.tif
+  FP_count_tif = os.path.join(scratchws,"FP_count.tif")
+  arcpy.LasPointStatsAsRaster_management(FP_lasd,FP_count_tif,"POINT_COUNT","CELLSIZE",16.4042)
+  FP_count = Con(IsNull(FP_count_tif),0,FP_count_tif)
+  #
+  # Create All_pt_count.tif
+  All_pt_count_tif = os.path.join(scratchws,"All_pt_count.tif")
+  arcpy.LasPointStatsAsRaster_management(lasd,All_pt_count_tif,"POINT_COUNT","CELLSIZE",16.4042)
+  All_pt_count = All_pt_count_tif
+  #
+  # Calculate Canopy Cover (FP/LP Ratio)
+  temp = os.path.join(scratchws, "temp.tif")
+  canopy_cover = Divide(Float(FP_count), Float(All_pt_count))
+  canopy_cover = Int(Float(canopy_cover)*100)
+  canopy_cover = Con(canopy_cover==100,99,canopy_cover)
+  this = ExtractByMask(canopy_cover, canopycover)
+  this = Con(IsNull(this), 0, this)
+  this.save(temp)
+  arcpy.ProjectRaster_management(temp, canopy_cover_tif, projection, "BILINEAR", "5")
 
   def classify(model, x):
 
@@ -1281,13 +1303,6 @@ def fuels():
               "    return "+shrub+"\\n"+
               "  elif x == \"tree\":\\n"+
               "    return "+tree+"\\n"
-              )
-
-    elif x == "canopy":
-      return ("def classify(x):\\n"+
-              "  if x == \"tree\":\\n"+
-              "    return 50\\n"+ # 50% canopy cover b/c
-              "  return 0"
               )
     # Returns height attribute - May delete if cannot include into .LCP
     elif x == "stand":
@@ -1327,6 +1342,7 @@ def LCP():
   elevation_lst = ["slope", "elevation", "aspect"]
   ascii_layers = []
   fuel = os.path.join(outputs, "fuel.asc")
+  arcpy.env.workspace = scratchws
 
   def convertToAscii(x, landscape_elements):
 
@@ -1335,14 +1351,17 @@ def LCP():
       # Variables
       ascii_output = os.path.join(outputs, layer + ".asc")
       where_clause = layer +" <> 9999"
-      temp = os.path.join(scratchgdb, "t_"+layer)
-      temp_raster = os.path.join(scratchgdb, "t_"+layer+"_r")
-      final = os.path.join(scratchgdb, layer)
+      temp = os.path.join(scratchws, "t_"+layer+".shp")
+      temp_raster = os.path.join(scratchws, "t_"+layer+"_r.tif")
+      final = os.path.join(scratchws, layer+".tif")
 
       # Selecting layer and converting to raster
       if layer in fuel_lst:
-        arcpy.Select_analysis(classified_landscape, temp, where_clause)
-        arcpy.PolygonToRaster_conversion(temp, layer, temp_raster, "CELL_CENTER", "",dem)
+        if layer == "canopy":
+          arcpy.CopyRaster_management(canopy_cover_tif, final, "", "", "0", "NONE", "NONE", "32_BIT_SIGNED","NONE", "NONE", "TIFF", "NONE")
+        else:
+          arcpy.Select_analysis(classified_landscape, temp, where_clause)
+          arcpy.PolygonToRaster_conversion(temp, layer, final, "CELL_CENTER", "",dem)
       elif layer in elevation_lst:
 
         # Calculating elevation derived layers
@@ -1353,12 +1372,13 @@ def LCP():
         elif layer == "elevation":
           temp_raster = dem
 
-      # Preparing raster for LCP specifications
-      arcpy.CopyRaster_management(temp_raster, final, "", "", "0", "NONE", "NONE", "32_BIT_SIGNED","NONE", "NONE", "GRID", "NONE")
-      arcpy.DefineProjection_management(temp_raster, projection)
+        # Preparing raster for LCP specifications
+        arcpy.CopyRaster_management(temp_raster, final, "", "", "0", "NONE", "NONE", "32_BIT_SIGNED","NONE", "NONE", "TIFF", "NONE")
+      
+      arcpy.DefineProjection_management(final, projection)
 
       # Extracting layer by analysis area
-      ready = ExtractByMask(final, naip)
+      ready = ExtractByMask(final, classified_landscape)
       ready.save(temp_raster)
 
       # Converting to ascii format and adding to list for LCP tool
@@ -1367,6 +1387,7 @@ def LCP():
 
       text = "The "+layer+" ascii file was created."
       generateMessage(text)
+
 
   # Coding note: Check to see that lists are concatenated
   convertToAscii(classified_landscape, fuel_lst + elevation_lst)
@@ -1489,6 +1510,8 @@ def burn_obia():
       unit_scalar = 1
     elif metric == "ros":
       unit_scalar = 1#3.28084
+    elif metric == "fi":
+      unit_scalar = 1#3.28084
 
     this = Raster(raw_raster)*unit_scalar
     this.save(scaled_raster)
@@ -1500,6 +1523,7 @@ def burn_obia():
     #-----------------------------------------------
     #-----------------------------------------------
     # Calculate zonal max and join to each objects
+    arcpy.AddField_management(classified_landscape, "JOIN", "INTEGER")
     arcpy.CalculateField_management(classified_landscape, "JOIN", "[FID]+1")
     z_table = ZonalStatisticsAsTable(classified_landscape, "JOIN", burn, outTable, "NODATA", "MAXIMUM")
     arcpy.AddField_management(outTable, metric, "FLOAT")
