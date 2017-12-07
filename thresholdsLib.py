@@ -52,31 +52,32 @@ def get_thresholds(bioregion, stage, landcover, field, unit):
             veg = "-80 <= x <= 760" #[-0.08, 0.76]
             return [imp,veg]
 
-    elif stage == "S2":
-        if landcover == "vegetation": 
-          if field == "S2_heig":
-            grass = "x <= "+str(ground_ht_threshold)
-            shrub = "x <= "+str(3*ground_ht_threshold)
-            tree = "x > "+str(3*ground_ht_threshold)
-            return [grass, shrub, tree]		     
+    elif stage == "tree":
+      if field == "tree_osavi":
+        healthy = "-100 <= x <= 1000" 
+        senescent = "-1000 <= x <= -100" 
+        return [healthy, senescent] 
 
-        elif landcover == "impervious":
-            if field == "S2_heig":
-              path = "x <= "+str(ground_ht_threshold)
-              building = "x > "+str(ground_ht_threshold)
-              return [path, building]
+      if field == "tree_gndvi":
+        healthy = "-100 <= x <= 1000"  
+        senescent = "-1000 <= x <= -100" 
+        return [healthy, senescent] 
+
+      if field == "tree_ndwi":
+        healthy = "1000 <= x <= 0"
+        senescent = "0 <= x <= 1000" 
+        return [healthy, senescent]  
+
+      if field == "tree_ndvi":
+        healthy = "-100 <= x <= 1000" 
+        senescent = "-1000 <= x < -100"
+        return [healthy, senescent]    
                 
   if bioregion == "Richmond":
     if stage == "S1":
-      if field == "S1_grid":
 
-        healthy = ">= 250" #[250,255]
-        dry = "<= 249"  #[0, 249]
-
-        return[healthy, dry]
-
-      elif field == "S1_ndvi":
-        imp = "-880 <= x <= -200" #[-0.88, -0.2]
+      if field == "S1_ndvi":
+        imp = "-880 <= x <= -300" #[-0.88, -0.2]
         veg = "-180 <= x <= 500"  #[-0.18, 0.5]
         return [imp, veg]
 
@@ -92,33 +93,29 @@ def get_thresholds(bioregion, stage, landcover, field, unit):
 
       elif field == "S1_osav":
         imp = "-940 <= x <= -250"  #[-0.94, -0.25]
-        veg = "-150 <= x <= 760" #[-0.15, 0.76]
+        veg = "-170 <= x <= 760" #[-0.15, 0.76]
         return [imp, veg]
 
-    elif stage == "S2":
-      if landcover == "vegetation":
-        if field == "S2_grid":
-          dry = ">= 250"    #[250, 255]
-          healthy = "<= 249"    #(0, 249]
-          return [dry, healthy]
-                
-        elif field == "S2_heig":
-          grass = "x <= "+str(ground_ht_threshold)
-          shrub = "x <= "+str(3*ground_ht_threshold)
-          tree = "x > "+str(3*ground_ht_threshold)
-          return [grass, shrub, tree]   
-      
-        elif field == "S2":
-          return("def landcover(a):\\n"+
-                 "    return a "
-                 )
+    elif stage == "tree":
+      if field == "tree_osavi":
+        healthy = "100 <= x <= 1000" 
+        senescent = "-1000 <= x <= 100" 
+        return [healthy, senescent] 
 
-      elif landcover == "impervious":
-        
-        if field == "S2_heig":
-          path = "x <= "+str(ground_ht_threshold)
-          building = "x > "+str(ground_ht_threshold)
-          return [path, building]
+      if field == "tree_gndvi":
+        healthy = "0 <= x <= 1000"  
+        senescent = "-1000 <= x <= 0" 
+        return [healthy, senescent] 
+
+      if field == "tree_ndwi":
+        healthy = "-1000 <= x <= 0"
+        senescent = "0 <= x <= 1000" 
+        return [healthy, senescent]  
+
+      if field == "tree_ndvi":
+        healthy = "-100 <= x <= 1000" 
+        senescent = "-1000 <= x < -100"
+        return [healthy, senescent]
 
   elif bioregion == "Grape_Vine":
     if stage == "S1":

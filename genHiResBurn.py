@@ -27,7 +27,7 @@
 #-------------------------------------------------------------------------------
 #-------------------------------------------------------------------------------
 # USER LOG
-date = "12_4"
+date = "12_5"
 # Summary
 #
 #
@@ -55,7 +55,7 @@ input_pipeline = "pipeline.shp"
 input_fuel_moisture = "fuel_moisture.fms"
 input_wind = ""
 input_weather = ""
-burn_metrics = ["fml", "ros", "fi"]
+burn_metrics = ["fml", "ros", "fi", "fli"]
 #-----------------------------------------------
 #-----------------------------------------------
 
@@ -64,9 +64,9 @@ burn_metrics = ["fml", "ros", "fi"]
 process_lidar = "No"
 align_inputs = "No"
 pipe_analysis = "No"
-create_obia = "No"
-classify_landscape = "No"
-run_svm = "No"
+create_obia = "Yes"
+classify_landscape = "Yes"
+run_svm = "Ys"
 classify_fuels = "Yes"
 create_LCP = "Yes"
 run_FlamMap = "No"
@@ -713,7 +713,7 @@ while zones:
       #-----------------------------------------------
       #-----------------------------------------------
      
-      text = "Calculating zonal median of each spectral enhancement for each object."
+      text = "Calculating zonal majority of each spectral enhancement for each object."
       generateMessage(text)
       for ie in created_enhancements_1m:
         field = image_enhancements.pop(0)
@@ -758,46 +758,7 @@ while zones:
                  "  return \"impervious\""
                  )
 
-        elif field == "S1_ndvi":
-          threshold = get_thresholds(bioregion, stage, landcover, field, unit)
-          imp = threshold[0]
-          veg = threshold[1]
-          return ("def landcover(x):\\n"+
-                 "  membership = \"\"\\n"+
-                 "  if "+imp+":\\n"+
-                 "    membership += \"I\"\\n"+
-                 "  if "+veg+":\\n"+
-                 "    membership += \"V\"\\n"+
-                 "  return membership\\n"
-                 )
-
-        elif field == "S1_ndwi":
-          threshold = get_thresholds(bioregion, stage, landcover, field, unit)
-          imp = threshold[0]
-          veg = threshold[1]
-          return ("def landcover(x):\\n"+
-                 "  membership = \"\"\\n"+
-                 "  if "+imp+":\\n"+
-                 "    membership += \"I\"\\n"+
-                 "  if "+veg+":\\n"+
-                 "    membership += \"V\"\\n"+
-                 "  return membership\\n"
-                 )
-
-        elif field == "S1_gndv":
-          threshold = get_thresholds(bioregion, stage, landcover, field, unit)
-          imp = threshold[0]
-          veg = threshold[1]
-          return ("def landcover(x):\\n"+
-                 "  membership = \"\"\\n"+
-                 "  if "+imp+":\\n"+
-                 "    membership += \"I\"\\n"+
-                 "  if "+veg+":\\n"+
-                 "    membership += \"V\"\\n"+
-                 "  return membership\\n"
-                 )
-
-        elif field == "S1_osav":
+        elif "S1_" in field:
           threshold = get_thresholds(bioregion, stage, landcover, field, unit)
           imp = threshold[0]
           veg = threshold[1]
@@ -826,12 +787,44 @@ while zones:
                  "  else:\\n"+
                  "    return \"confusion\"\\n"
                  )
+      elif stage == "tree":
+        if "tree_" in field:
+          threshold = get_thresholds(bioregion, stage, landcover, field, unit)
+          healthy = threshold[0]
+          senescent = threshold[1]
+          return ("def landcover(x):\\n"+
+                   "  membership = \"\"\\n"+
+                   "  if "+healthy+":\\n"+
+                   "    membership += \"H\"\\n"+
+                   "  if "+senescent+":\\n"+
+                   "    membership += \"S\"\\n"+
+                   "  return membership\\n"
+                   )
+        elif field == "S2":
+          return("def landcover(a,b,c,d):\\n"+
+                 "  membership = a+b+c+d\\n"+
+                 "  H,S = 0,0\\n"+
+                 "  for m in membership:\\n"+
+                 "    if m == \"H\":\\n"+
+                 "      H += 1\\n"+
+                 "    if m == \"S\":\\n"+
+                 "      S += 1\\n"+
+                 "  if H < S:\\n"+
+                 "    return \"senescent_tree\"\\n"+
+                 "  return \"healthy_tree\"\\n"
+                   )
 
     # Assigns classess
     def createClassMembership(stage, landcover, field, field_lst, output):
       if field in stages:
         field_lst = field_lst[:-2]
         fxn = "landcover("+field_lst+")"
+
+      elif stage == "tree":
+        index = field
+        field = stage+"_"+field
+        field_lst += "!"+field+"!, "
+        fxn = "landcover(!"+index+"!)"
 
       else:
         index = field
@@ -854,7 +847,7 @@ while zones:
                        ["vegetation",
                             ["grass", "shrub", "tree"]],
                        ["impervious",
-                            ["building", "path"]]
+                            ["nonburnable"]]
                       ]
 
     # Indices used for each stage of classification
@@ -930,18 +923,8 @@ while zones:
 
               confused_ie_lst = []
               bands_5m = createImageEnhancements(band_lst, naip, heights, "5m", scratchgdb)
-            # for ie in bands_5m:
-            #   band = os.path.basename(ie)
-            #   confused_ie = os.path.join(scratchgdb, "confused_"+band)
-            #   this = ExtractByMask(ie, confused)
-            #   this = Con(IsNull(Float(this)), -10000, Float(this))
-            #   this.save(confused_ie)
-            #   confused_ie_lst.extend([confused_ie])
-            #  arcpy.CompositeBands_management(confused_ie_lst, composite)
               arcpy.CompositeBands_management(bands_5m, composite)
               arcpy.DefineProjection_management(composite, projection)
-
-
               #-----------------------------------------------
               #-----------------------------------------------
 
@@ -1109,81 +1092,121 @@ while zones:
                 text = "Creating "+ stage +" objects."
                 generateMessage(text)
 
-                if stage == "grass":
-                  spectral_detail = 10
-                  spatial_detail = 10
-                  min_seg_size = 1
-                  s2 = "grass"
+                if stage == "nonburnable":
+                  arcpy.Select_analysis(S1_classified, fuel_fc, "S1 = 'impervious'")
+                  arcpy.AddField_management(fuel_fc, "S2", "TEXT")
+                  arcpy.CalculateField_management(fuel_fc, "S2", "label(!S2!)", "PYTHON_9.3", "def label(x):\\n  return \"nonburnable\"\\n")
+                  fields = [f.name for f in arcpy.ListFields(fuel_fc)]
+                  delete_fields = []
+                  for field in fields:
+                    if field not in ["OBJECTID", "Shape", "Shape_Area", "Shape_Length", "ID", "S2"]:
+                      delete_fields.append(field)
+                  arcpy.DeleteField_management(fuel_fc, delete_fields)
+                  features.extend([fuel_fc])
 
-                  this = Con(Int(s1_heights)<=30.48, 1)
+                else:
 
-                elif stage == "shrub":
+                  if stage == "grass":
+                    spectral_detail = 10
+                    spatial_detail = 10
+                    min_seg_size = 1
+                    s2 = "grass"
 
-                  spectral_detail = 20
-                  spatial_detail = 20
-                  min_seg_size = 1
-                  s2 = "shrub"
+                    this = Con(Int(s1_heights)<=30.48, 1)
 
-                  this = Con((Int(s1_heights)>30.48) & (Int(s1_heights)<=304.8), 1)
+                  elif stage == "shrub":
 
-                elif stage == "tree":
-                  
-                  spectral_detail = 20
-                  spatial_detail = 20
-                  min_seg_size = 1
-                  s2 = "tree"
+                    spectral_detail = 20
+                    spatial_detail = 20
+                    min_seg_size = 1
+                    s2 = "shrub"
 
-                  this = Con(Int(s1_heights)>304.8, 1)
+                    this = Con((Int(s1_heights)>30.48) & (Int(s1_heights)<=304.8), 1)
 
-                elif stage == "path":
-                  
-                  spectral_detail = 1
-                  spatial_detail = 1
-                  min_seg_size = 1
-                  s2 = "path"
+                  elif stage == "tree":
+                    
+                    spectral_detail = 20
+                    spatial_detail = 20
+                    min_seg_size = 1
+                    s2 = "tree"
 
-                  this = Con(Int(s1_heights)<=30.48, 1)
+                    this = Con(Int(s1_heights)>304.8, 1)
 
-                elif stage == "building":
+                  this.save(stage_rast)
+                  if arcpy.sa.Raster(stage_rast).maximum == 1:
+                    arcpy.RasterToPolygon_conversion(stage_rast, stage_mask, "NO_SIMPLIFY", "VALUE")
+                
+                    this = ExtractByMask(naip, stage_mask)
+                    this.save(naip_fuel)
 
-                  spectral_detail = 1
-                  spatial_detail = 20
-                  min_seg_size = 1
-                  s2 = "building"
+                    naip_raster_slide = os.path.join(scratchws, "naip_slide.tif")
+                    bands_fuel = []
+                    for i in range(4):
+                      band = os.path.join(naip_fuel, "Band_")
+                      band_raster_slide = os.path.join(scratchgdb, "bandfuel_"+str(i+1))
+                      this = Con(IsNull(Float(naip_fuel)), -10000, Float(naip_fuel))
+                      this.save(band_raster_slide)
+                      bands_fuel.extend([band_raster_slide])
+                    arcpy.CompositeBands_management(bands_fuel, naip_raster_slide)
 
-                  this = Con(Int(s1_heights)>30.48, 1)
-                this.save(stage_rast)
-                if arcpy.sa.Raster(stage_rast).maximum == 1:
-                  arcpy.RasterToPolygon_conversion(stage_rast, stage_mask, "NO_SIMPLIFY", "VALUE")
-              
-                  this =  ExtractByMask(naip, stage_mask)
-                  this.save(naip_fuel)
+                    if arcpy.sa.Raster(naip_raster_slide).maximum > 0:
 
-                  naip_raster_slide = os.path.join(scratchws, "naip_slide.tif")
-                  bands_fuel = []
-                  for i in range(4):
-                    band = os.path.join(naip_fuel, "Band_")
-                    band_raster_slide = os.path.join(scratchgdb, "bandfuel_"+str(i+1))
-                    this = Con(IsNull(Float(naip_fuel)), -10000, Float(naip_fuel))
-                    this.save(band_raster_slide)
-                    bands_fuel.extend([band_raster_slide])
-                  arcpy.CompositeBands_management(bands_fuel, naip_raster_slide)
+                      # Creating objects and clipping to surface type
+                      seg_naip = SegmentMeanShift(naip_raster_slide, spectral_detail, spatial_detail, min_seg_size)
+                      seg_naip.save(fuel_sms_rast)
+                      this = ExtractByMask(fuel_sms_rast, naip_fuel)
+                      this.save(fuel_sms_rast)
+                      if arcpy.sa.Raster(fuel_sms_rast).maximum > 0:
+                        arcpy.RasterToPolygon_conversion(fuel_sms_rast, fuel_fc, "NO_SIMPLIFY", "VALUE")
+                        fxn = "S2()"
+                        label_class = "def S2():\\n"+"  return '"+s2+"'\\n"
+                        arcpy.AddField_management(fuel_fc, "S2", "TEXT")
+                        arcpy.CalculateField_management(fuel_fc, "S2", fxn, "PYTHON_9.3", label_class)
+                        if stage != "tree":
+                          features.extend([fuel_fc])
 
-                  if arcpy.sa.Raster(naip_raster_slide).maximum > 0:
+                      if stage == "tree":
+                          tree_cover = os.path.join(scratchgdb, "tree_cover")
+                          canopycover = os.path.join(scratchgdb, "canopycover")  
 
-                    # Creating objects and clipping to surface type
-                    seg_naip = SegmentMeanShift(naip_raster_slide, spectral_detail, spatial_detail, min_seg_size)
-                    seg_naip.save(fuel_sms_rast)
-                    this = ExtractByMask(fuel_sms_rast, naip_fuel)
-                    this.save(fuel_sms_rast)
-                    if arcpy.sa.Raster(fuel_sms_rast).maximum > 0:
-                      arcpy.RasterToPolygon_conversion(fuel_sms_rast, fuel_fc, "NO_SIMPLIFY", "VALUE")
-                      fxn = "S2()"
-                      label_class = "def S2():\\n"+"  return '"+s2+"'\\n"
-                      arcpy.AddField_management(fuel_fc, "S2", "TEXT")
-                      arcpy.CalculateField_management(fuel_fc, "S2", fxn, "PYTHON_9.3", label_class)
-                      #arcpy.CalculateField_management(fuel_fc, "S2", "'"+s2+"'")
-                      features.extend([fuel_fc])
+                          where_clause = "S2 = 'tree'"
+                          arcpy.Select_analysis(fuel_fc, tree_cover, where_clause)
+                          arcpy.Dissolve_management(tree_cover, canopycover)
+
+                          tree_fishnet = os.path.join(scratchgdb, "tree_fishnet")
+                          tree_tiles = os.path.join(outputs, "trees.shp")
+
+                          desc = arcpy.Describe(canopycover)
+                          origin_coord = str(desc.extent.XMin)+ " " +str(desc.extent.YMin)
+                          y_axis_coord = str(desc.extent.XMin)+ " " +str(desc.extent.YMax)
+                          
+                          arcpy.CreateFishnet_management(tree_fishnet, origin_coord, y_axis_coord, coarsening_size, coarsening_size, "", "", "", "NO_LABELS", canopycover, "POLYGON")
+                          arcpy.DefineProjection_management(tree_fishnet, projection)
+                          arcpy.Clip_analysis(tree_fishnet, canopycover, fuel_fc) 
+
+                          arcpy.AddField_management(fuel_fc, "JOIN", "INTEGER")
+                          arcpy.CalculateField_management(fuel_fc, "JOIN", "[OBJECTID]")
+
+                          # Join image enhancements to tree tiles
+                          for field in ["ndvi", "gndvi", "ndwi", "osavi"]:
+                            outTable = os.path.join(scratchgdb, "zonal_tree_"+field)
+                            ie = field+"_"+str(zone_num)
+                            z_table = ZonalStatisticsAsTable(fuel_fc, "JOIN", ie, outTable, "NODATA", "MEAN")
+                            arcpy.AddField_management(outTable, field, "FLOAT")
+                            arcpy.CalculateField_management(outTable, field, "[MEAN]")
+                            one_to_one_join(fuel_fc, outTable, field, "FLOAT")
+
+                            # classify tiles into healthy and scenescent
+                            field_lst = createClassMembership(stage, landcover, field, field_lst, fuel_fc)
+
+                          #classify all
+                          ##%#$#&^
+                          field = "S2"
+                          arcpy.AddField_management(fuel_fc, "S2", "TEXT")
+
+                          createClassMembership(stage, "", field, field_lst, fuel_fc)
+                          features.extend([fuel_fc])
+
 
           text = "Creating contiguous land cover."
           generateMessage(text)
@@ -1222,9 +1245,9 @@ if len(landscape_analysis) > 0:
   tree_cover = os.path.join(scratchgdb, "tree_cover")
   canopycover = os.path.join(scratchgdb, "canopycover")  
 
-  where_clause = "S2 = 'tree'"
+  where_clause = "S2 = 'healthy_tree' OR S2 = 'senescent_tree'"
   arcpy.Select_analysis(classified_landscape, tree_cover, where_clause)
-  arcpy.Dissolve_management(tree_cover, canopycover)
+  arcpy.Dissolve_management(tree_cover, canopycover) 
   #-----------------------------------------------
   #-----------------------------------------------
 
@@ -1276,12 +1299,11 @@ def fuels():
 
     # Anderson 13 fuel models
     if model == "13":
-      building = "99"
-      tree = "10"
+      healthy_tree = "10"
+      senescent_tree = "13"
       shrub = "6"
       grass = "1"
-      water = "98"
-      path = "99"
+      nonburnable = "99"
     elif model != "13":
       #-----------------------------------------------
       #-----------------------------------------------
@@ -1291,18 +1313,16 @@ def fuels():
       classify("13", output_field)
     if x == "fuel":
       return ("def classify(x):\\n"+
-              "  if x == \"building\":\\n"+
-              "    return "+building+"\\n"+
-              "  elif x == \"path\": \\n"+
-              "    return "+path+"\\n"+
-              "  elif x == \"water\":\\n"+
-              "    return "+water+"\\n"+
+              "  if x == \"nonburnable\":\\n"+
+              "    return "+nonburnable+"\\n"+
               "  elif x == \"grass\":\\n"+
               "    return "+grass+"\\n"+
               "  elif x == \"shrub\":\\n"+
               "    return "+shrub+"\\n"+
-              "  elif x == \"tree\":\\n"+
+              "  elif x == \"healthy_tree\":\\n"+
               "    return "+tree+"\\n"
+              "  elif x == \"senescent_tree\":\\n"+
+              "    return "+senescent_tree+"\\n"
               )
     # Returns height attribute - May delete if cannot include into .LCP
     elif x == "stand":
