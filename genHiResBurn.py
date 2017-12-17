@@ -27,7 +27,7 @@
 #-------------------------------------------------------------------------------
 #-------------------------------------------------------------------------------
 # USER LOG
-date = "12_5"
+date = "12_13"
 # Summary
 #
 #
@@ -55,7 +55,7 @@ input_pipeline = "pipeline.shp"
 input_fuel_moisture = "fuel_moisture.fms"
 input_wind = ""
 input_weather = ""
-burn_metrics = ["fml", "ros", "fi", "fli"]
+burn_metrics = ["fml", "ros", "fi"]
 #-----------------------------------------------
 #-----------------------------------------------
 
@@ -64,13 +64,13 @@ burn_metrics = ["fml", "ros", "fi", "fli"]
 process_lidar = "No"
 align_inputs = "No"
 pipe_analysis = "No"
-create_obia = "Yes"
-classify_landscape = "Yes"
-run_svm = "Ys"
-classify_fuels = "Yes"
-create_LCP = "Yes"
+create_obia = "No"
+classify_landscape = "No"
+run_svm = "No"
+classify_fuels = "No"
+create_LCP = "No"
 run_FlamMap = "No"
-join_burns = "No"
+join_burns = "Yes"
 create_MXD = "Yes"
 
 processes = [
@@ -96,7 +96,7 @@ create_MXD]
 
 #-----------------------------------------------
 #-----------------------------------------------
-# Import 
+# Import
 import arcpy
 import os
 import sys
@@ -214,7 +214,7 @@ raw_naip = os.path.join(inputs, input_naip) # NAIP Imagery at 1m res
 lasd = os.path.join(inputs, input_las)
 raw_heights = os.path.join(inputs, input_heights) # Heights
 raw_dem = os.path.join(inputs, input_dem) # DEM
-raw_dsm = os.path.join(inputs, "dsm.tif") 
+raw_dsm = os.path.join(inputs, "dsm.tif")
 pipeline = os.path.join(inputs, input_pipeline) # Pipeline
 fuel_moisture = os.path.join(inputs, input_fuel_moisture) # Fuel Moisture
 wind = os.path.join(inputs, input_wind) # Wind
@@ -350,7 +350,7 @@ def align():
 
   #make fishnet with 1km x 1km
   analysis_area = os.path.join(outputs, "bnd_fishnet.shp")
-  
+
   text = "Creating a fishnet."
   generateMessage(text)
 
@@ -362,9 +362,9 @@ def align():
 
   cell_width = 1000
   cell_height = 1000
-  
+
   arcpy.CreateFishnet_management(fishnet, origin_coord, y_axis_coord, cell_width, cell_height, "", "", "", "NO_LABELS", naip, "POLYGON")
-  arcpy.Clip_analysis(fishnet, bnd_zones, analysis_area)  
+  arcpy.Clip_analysis(fishnet, bnd_zones, analysis_area)
   arcpy.DefineProjection_management(analysis_area, projection)
 
    #-----------------------------------------------
@@ -624,7 +624,7 @@ while zones:
         arcpy.Select_analysis(nonground_mask_raw, nonground_mask_poly, where_clause)
         arcpy.Erase_analysis(bnd, nonground_mask_poly, ground_mask_poly)
         arcpy.PolygonToRaster_conversion(ground_mask_poly, "OBJECTID", ground_mask_raster, "CELL_CENTER", "", cell_size)
-        
+
         arcpy.RasterToPolygon_conversion(ground_mask_raster, ground_mask_raw, "NO_SIMPLIFY", "VALUE")
         arcpy.Select_analysis(ground_mask_raw, ground_mask_poly, where_clause)
         arcpy.Erase_analysis(bnd, ground_mask_poly, nonground_mask_poly)
@@ -712,7 +712,7 @@ while zones:
 
       #-----------------------------------------------
       #-----------------------------------------------
-     
+
       text = "Calculating zonal majority of each spectral enhancement for each object."
       generateMessage(text)
       for ie in created_enhancements_1m:
@@ -1020,7 +1020,7 @@ while zones:
               zonal_svm = os.path.join(scratchgdb, "zonal_svm")
 
               ## Joining zonal majority to confused object
-              
+
               z_stat = ZonalStatisticsAsTable(confused, "JOIN", svm, zonal_svm, "NODATA", "MAJORITY")
               arcpy.AddField_management(confused, "MAJORITY", "LONG")
               one_to_one_join(confused, zonal_svm, "MAJORITY", "LONG")
@@ -1071,7 +1071,7 @@ while zones:
             generateMessage(text)
 
             arcpy.Select_analysis(S1_classified, primitive_mask, "S1 = '"+landcover+"'")
-            this = Int(Float(heights)*100)
+            this = Int(Float(heights)*30.48)
             this.save(cm_heights)
             if arcpy.management.GetCount(primitive_mask)[0] != "0":
               this = ExtractByMask(cm_heights, primitive_mask)
@@ -1088,7 +1088,7 @@ while zones:
                 fuel_sms_rast = os.path.join(scratchgdb, stage+"_sms_rast")
                 fuel_sms = os.path.join(scratchgdb, stage+"_sms")
                 fuel_fc = os.path.join(scratchgdb, stage+"_fc")
-                
+
                 text = "Creating "+ stage +" objects."
                 generateMessage(text)
 
@@ -1124,7 +1124,7 @@ while zones:
                     this = Con((Int(s1_heights)>30.48) & (Int(s1_heights)<=304.8), 1)
 
                   elif stage == "tree":
-                    
+
                     spectral_detail = 20
                     spatial_detail = 20
                     min_seg_size = 1
@@ -1135,7 +1135,7 @@ while zones:
                   this.save(stage_rast)
                   if arcpy.sa.Raster(stage_rast).maximum == 1:
                     arcpy.RasterToPolygon_conversion(stage_rast, stage_mask, "NO_SIMPLIFY", "VALUE")
-                
+
                     this = ExtractByMask(naip, stage_mask)
                     this.save(naip_fuel)
 
@@ -1165,31 +1165,32 @@ while zones:
                         if stage != "tree":
                           features.extend([fuel_fc])
 
+                      # Should shrubs also be segmented this way??
                       if stage == "tree":
                           tree_cover = os.path.join(scratchgdb, "tree_cover")
-                          canopycover = os.path.join(scratchgdb, "canopycover")  
+                          canopycover = os.path.join(scratchgdb, "canopycover")
 
                           where_clause = "S2 = 'tree'"
                           arcpy.Select_analysis(fuel_fc, tree_cover, where_clause)
                           arcpy.Dissolve_management(tree_cover, canopycover)
 
-                          tree_fishnet = os.path.join(scratchgdb, "tree_fishnet")
-                          tree_tiles = os.path.join(outputs, "trees.shp")
+                          tree_fishnet = os.path.join(scratchgdb, "tree_fishnet_"+str(zone_num))
 
                           desc = arcpy.Describe(canopycover)
                           origin_coord = str(desc.extent.XMin)+ " " +str(desc.extent.YMin)
                           y_axis_coord = str(desc.extent.XMin)+ " " +str(desc.extent.YMax)
-                          
+
                           arcpy.CreateFishnet_management(tree_fishnet, origin_coord, y_axis_coord, coarsening_size, coarsening_size, "", "", "", "NO_LABELS", canopycover, "POLYGON")
                           arcpy.DefineProjection_management(tree_fishnet, projection)
-                          arcpy.Clip_analysis(tree_fishnet, canopycover, fuel_fc) 
+                          arcpy.Clip_analysis(tree_fishnet, canopycover, fuel_fc)
+                          arcpy.DeleteFeatures_management(tree_fishnet)
 
                           arcpy.AddField_management(fuel_fc, "JOIN", "INTEGER")
                           arcpy.CalculateField_management(fuel_fc, "JOIN", "[OBJECTID]")
 
                           # Join image enhancements to tree tiles
                           for field in ["ndvi", "gndvi", "ndwi", "osavi"]:
-                            outTable = os.path.join(scratchgdb, "zonal_tree_"+field)
+                            outTable = os.path.join(scratchgdb, "zonal_tree_"+field+"_"+str(zone_num))
                             ie = field+"_"+str(zone_num)
                             z_table = ZonalStatisticsAsTable(fuel_fc, "JOIN", ie, outTable, "NODATA", "MEAN")
                             arcpy.AddField_management(outTable, field, "FLOAT")
@@ -1210,7 +1211,7 @@ while zones:
 
           text = "Creating contiguous land cover."
           generateMessage(text)
-          
+
           arcpy.Merge_management(features, landscape_fc)
           # Update Join IDs
           arcpy.AddField_management(landscape_fc, "JOIN", "INTEGER")
@@ -1227,8 +1228,8 @@ while zones:
           arcpy.AddField_management(outTable, "height", "FLOAT")
           arcpy.CalculateField_management(outTable, "height", "[MAX]")
           one_to_one_join(landscape_fc, outTable, "height", "FLOAT")
-            
-          
+
+
         # Variables
 
     if classify_landscape == "Yes":
@@ -1243,11 +1244,11 @@ if len(landscape_analysis) > 0:
 
   arcpy.Merge_management(landscape_analysis, classified_landscape)
   tree_cover = os.path.join(scratchgdb, "tree_cover")
-  canopycover = os.path.join(scratchgdb, "canopycover")  
+  canopycover = os.path.join(scratchgdb, "canopycover")
 
   where_clause = "S2 = 'healthy_tree' OR S2 = 'senescent_tree'"
   arcpy.Select_analysis(classified_landscape, tree_cover, where_clause)
-  arcpy.Dissolve_management(tree_cover, canopycover) 
+  arcpy.Dissolve_management(tree_cover, canopycover)
   #-----------------------------------------------
   #-----------------------------------------------
 
@@ -1320,7 +1321,7 @@ def fuels():
               "  elif x == \"shrub\":\\n"+
               "    return "+shrub+"\\n"+
               "  elif x == \"healthy_tree\":\\n"+
-              "    return "+tree+"\\n"
+              "    return "+healthy_tree+"\\n"
               "  elif x == \"senescent_tree\":\\n"+
               "    return "+senescent_tree+"\\n"
               )
@@ -1394,11 +1395,12 @@ def LCP():
 
         # Preparing raster for LCP specifications
         arcpy.CopyRaster_management(temp_raster, final, "", "", "0", "NONE", "NONE", "32_BIT_SIGNED","NONE", "NONE", "TIFF", "NONE")
-      
+
       arcpy.DefineProjection_management(final, projection)
 
       # Extracting layer by analysis area
-      ready = ExtractByMask(final, classified_landscape)
+      #ready = ExtractByMask(final, classified_landscape)
+      ready = ExtractByMask(final, dem)
       ready.save(temp_raster)
 
       # Converting to ascii format and adding to list for LCP tool
