@@ -8,20 +8,23 @@
 #--------------------------------------------------------------------------------------------------------------------------------------
 #
 # USER LOG
-date = "12_13"
+date = "1_4-2012"
 # Geographic Data
-location_name = "Tubbs"
-bioregion = "Richmond" #[Tahoe, Richmond, Grape_Vine]
-#Summary
-summary = "Purpose:     \n"+
-          "(1) Process raw imagery and raw lidar data into landscape objects that are classified into fire behavior fuel models.\n"+
-          "(2) Create all necessary input files for FlamMap's landscape file (.LCP) and burn using FlamMap DLL.\n"+
-          "(3) Join all burn metrics to objects. If an infrastructure file exists, then burns will be joined to infrsx segments.\n"+
-          "(4) Populate an MXD with all necessary shapefiles.\n"
+location_name = "Yosemite"
+bioregion = "Sierra_Nevada_Mountains" #["Sierra_Nevada_Mountains","CA_Oak_Woodlands", "SoCal_Mountains"]
 
-projection = "UTMZ10"  #["UTMZ10", "UTMZ11"]
-lidar_date = 2003
-naip_date = 2009
+
+summary = ""
+#summary = "Purpose:     \\n"+
+#          "(1) Process raw imagery and raw lidar data into landscape objects that are classified into fire behavior fuel models.\\n"+
+#          "(2) Create all necessary input files for FlamMap's landscape file (.LCP) and burn using FlamMap DLL.\\n"+
+#          "(3) Join all burn metrics to objects. If an infrastructure file exists, then burns will be joined to infrsx segments.\\n"+
+#          "(4) Populate an MXD with all necessary shapefiles.\\n"
+
+projection = "UTMZ11"  #["UTMZ10", "UTMZ11"]
+lidar_date = 2013
+naip_date = 2014
+burn_metrics = ["fml", "ros", "fi"]
 
 # Settings
 coarsening_size = "5" #meters
@@ -48,21 +51,18 @@ input_weather = ""
 #-----------------------------------------------
 
 pull_imagery = "No"
-process_lidar = "No" # Process LiDAR data
-align_inputs = "No" # "Align and Scale inputs"
+process_lidar = "Yes" # Process LiDAR data
+align_inputs = "Yes" # "Align and Scale inputs"
 pipe_analysis = "No"  # "Reduce Analysis to Infrastructure Buffer"
-generate_land_cover = "No"  # "Generate Land Cover & SVM"
-classify_fuels = "No" # "Classify LC into FBFMs"
+generate_land_cover = "Yes"  # "Generate Land Cover & SVM"
 fire_behavior = "No"  # "Run FlamMap & Join Burns"
 create_MXD = "Yes"  # "Create or Update MXD"
 
 processes = [
-[align_inputs, "Align Inputs",]
+[align_inputs, "Align Inputs"],
 [pipe_analysis, "Extract Infrastructure"],
 [generate_land_cover, "Generate Land Cover"],
-[classify_fuels,"Classify Fuels"],
 [fire_behavior, "Assess Fire Behavior"],
-[join_burns,"Join Burn Metrics"],
 [create_MXD, "Create MXD: "+location_name]
 ]
 #-----------------------------------------------
@@ -78,8 +78,9 @@ processes = [
 #-----------------------------------------------
 #-----------------------------------------------
 # Import
+import time
 import arcpy
-import ee
+#import ee
 import os
 import sys
 import shutil
@@ -176,7 +177,7 @@ elif os.path.basename(scriptpath) != date:
 # Dependent scripts
 from imageEnhancements import createImageEnhancements
 from tableJoin import one_to_one_join
-from thresholdsLib import get_thresholds
+from thresholdsLib import *
 
 #Setting inputs, outputs, scratchws, scratch.gdb
 
@@ -217,11 +218,12 @@ classified_landscape = os.path.join(outputs, "classified.shp")
 
 used_tiles = os.path.join(outputs, "bnd_fishnet.shp")
 analysis_area = used_tiles #bnd_zones  # analysis area/ area of interest
-dem = os.path.join(outputs, "dem.tif")  # Resampled DEM in native units
-heights = os.path.join(outputs, "heights.tif")  # Resampled heights in native units
+dem = os.path.join(outputs, "dem_"+coarsening_size+"m.tif")  # Resampled DEM in native units
+heights = os.path.join(outputs, "heights_"+coarsening_size+"m.tif")  # Resampled heights in native units
 scaled_heights = os.path.join(outputs, "scaled_heights.tif")  # Heights in project units
 scaled_dem = os.path.join(outputs, "scaled_dem.tif")  # DEM in project units
 canopy_cover_tif = os.path.join(outputs,"canopy_cover.tif")
+canopycover = os.path.join(scratchgdb, "canopycover")
 tiles_used = 1
 
 
@@ -235,30 +237,34 @@ naip_b4 = os.path.join(naip, "Band_4")
 
 #-----------------------------------------------
 #-----------------------------------------------
+# Details
+arcpy.AddMessage("Site: "+location_name)
+arcpy.AddMessage("Projection: "+projection)
+arcpy.AddMessage("Resolution: "+coarsening_size + "m")
 
 #Create Process Log
 info  = os.path.join(current_project, "README.txt")
 if os.path.isfile(info):
   os.remove(info)
 f = open(info, "w")
-f.write(date)
-f.write(location_name)
-f.write("-----------------------------")
-f.write(summary)
-f.write("-----------------------------")
-f.close()
+f.write(date+"\n")
+f.write(location_name+"\n")
+f.write("-----------------------------"+"\n")
+f.write(summary+"\n")
+f.write("-----------------------------"+"\n")
+#f.close()
 
 def log(message):
-  f = open(info, "w")
-  f.write(message)
-  f.close()
+#  f = open(info, "w")
+  f.write(message+"\n")
+#  f.close()
 
 arcpy.AddMessage("-----------------------------")
 arcpy.AddMessage("Processes enabled:")
 for process in processes:
-  if process:
+  if process[0] == "Yes":
     arcpy.AddMessage("    -"+process[1])
-  arcpy.AddMessage("-----------------------------")
+arcpy.AddMessage("-----------------------------")
 
 # Alert function with step counter
 count = 1
@@ -279,13 +285,44 @@ def newProcess(text):
   arcpy.AddMessage("-----------------------------")
   log(message)
 
+def empty_scratchgdb():
+  if arcpy.Exists(scratchgdb):  
+    arcpy.Delete_management(scratchgdb)
+  arcpy.CreateFileGDB_management(scratchws, "Scratch.gdb")
 
-# Details
-arcpy.AddMessage("Site: "+location_name)
-arcpy.AddMessage("Projection: "+projection)
-arcpy.AddMessage("Resolution: "+coarsening_size + "m")
-arcpy.AddMessage("Fuel Model: "+model)
-arcpy.AddMessage("-----------------------------")
+ts = 0
+total_area = 0
+remaining_area = 0
+completed_area = 0
+zone_area = 0
+times = []
+def estimate_time(zone_num):
+
+  global ts
+  global total_area
+  global completed_area
+  global remaining_area
+  global zone_area
+  global times
+
+  tf = time.time()
+  te = tf - ts
+  ts = tf
+
+  tem = te//60
+
+  completed_area += zone_area
+  percent_area = int((completed_area/total_area)*100)
+  remaining_area = total_area-completed_area
+  zone_runtime = tem//(zone_area) #runtime for sq. km
+
+  times.extend([zone_runtime])
+  avg_time = sum(times)//len(times)
+  remaining_time = int(avg_time*remaining_area)
+  hours = remaining_time//60
+  minutes = remaining_time%10
+
+  arcpy.AddMessage(str(percent_area)+" % Completed  |  Estimated time remaining: "+ str(hours)+"hrs:"+str(minutes)+"min")
 #-----------------------------------------------
 #-----------------------------------------------
 
@@ -302,16 +339,6 @@ elif projection == "UTMZ11":
   scale_naip = 1
   unit = "Meters"
   projection = "PROJCS['NAD_1983_UTM_Zone_11N',GEOGCS['GCS_North_American_1983',DATUM['D_North_American_1983',SPHEROID['GRS_1980',6378137.0,298.257222101]],PRIMEM['Greenwich',0.0],UNIT['Degree',0.0174532925199433]],PROJECTION['Transverse_Mercator'],PARAMETER['False_Easting',500000.0],PARAMETER['False_Northing',0.0],PARAMETER['Central_Meridian',-117.0],PARAMETER['Scale_Factor',0.9996],PARAMETER['Latitude_Of_Origin',0.0],UNIT['Meter',1.0]]"
-elif projection == "SPIII":
-  scale_height = 1
-  scale_naip = 3.28084
-  unit = "Feet"
-  projection = "PROJCS['NAD_1983_StatePlane_California_III_FIPS_0403_Feet',GEOGCS['GCS_North_American_1983',DATUM['D_North_American_1983',SPHEROID['GRS_1980',6378137.0,298.257222101]],PRIMEM['Greenwich',0.0],UNIT['Degree',0.0174532925199433]],PROJECTION['Lambert_Conformal_Conic'],PARAMETER['False_Easting',6561666.666666666],PARAMETER['False_Northing',1640416.666666667],PARAMETER['Central_Meridian',-120.5],PARAMETER['Standard_Parallel_1',37.06666666666667],PARAMETER['Standard_Parallel_2',38.43333333333333],PARAMETER['Latitude_Of_Origin',36.5],UNIT['Foot_US',0.3048006096012192]]"
-elif projection == "SPIV":
-  scale_height = 1
-  scale_naip = 3.28084
-  unit = "Feet"
-  projection = "PROJCS['NAD_1983_StatePlane_California_VI_FIPS_0406_Feet',GEOGCS['GCS_North_American_1983',DATUM['D_North_American_1983',SPHEROID['GRS_1980',6378137.0,298.257222101]],PRIMEM['Greenwich',0.0],UNIT['Degree',0.0174532925199433]],PROJECTION['Lambert_Conformal_Conic'],PARAMETER['False_Easting',6561666.666666666],PARAMETER['False_Northing',1640416.666666667],PARAMETER['Central_Meridian',-116.25],PARAMETER['Standard_Parallel_1',32.78333333333333],PARAMETER['Standard_Parallel_2',33.88333333333333],PARAMETER['Latitude_Of_Origin',32.16666666666666],UNIT['Foot_US',0.3048006096012192]]"
 #-----------------------------------------------
 #-----------------------------------------------
 
@@ -322,7 +349,6 @@ arcpy.AddMessage("Processing Started.")
 arcpy.AddMessage("-----------------------------")
 #-----------------------------------------------
 #-----------------------------------------------
-
 
 
 #-----------------------------------------------
@@ -343,7 +369,7 @@ def align():
       def __init__(self, name, start, end, lon1, lat1, lon2, lat2):
         self.name = location_name
         self.start = lidar_date+"-01-01"
-        self.end = str(int(lidar_date)+10)"-12-30"
+        self.end = str(int(lidar_date)+10)+"-12-30"
         self.lon1 = desc.extent.XMin
         self.lat1 = desc.extent.YMin
         self.lon2 = desc.extent.XMax
@@ -380,7 +406,7 @@ def align():
 
   naip = os.path.join(outputs,"naip_"+coarsening_size+"m.tif")
   bnd_zones_rast = os.path.join(scratchgdb, "bnd_zones_rast")
-  cell_size = int(int(coarsening_size)*scale_naip)
+  cell_size = int(coarsening_size)
   naip_cell_size = str(cell_size) +" "+str(cell_size)
   arcpy.Resample_management(raw_naip, naip, naip_cell_size, "BILINEAR") # Bilinear Interpolation reduce image distortion when scaling.It linearly interpolates the nearest 4 pixels
   arcpy.DefineProjection_management(naip, projection)
@@ -403,7 +429,7 @@ def align():
   text = "Creating a fishnet."
   generateMessage(text)
 
-  fishnet = os.path.join(scratchgdb, "fishnet")
+  fishnet = os.path.join(scratchws, "fishnet.shp")
 
   desc = arcpy.Describe(naip)
   origin_coord = str(desc.extent.XMin)+ " " +str(desc.extent.YMin)
@@ -414,7 +440,7 @@ def align():
 
   arcpy.CreateFishnet_management(fishnet, origin_coord, y_axis_coord, cell_width, cell_height, "", "", "", "NO_LABELS", naip, "POLYGON")
   arcpy.Clip_analysis(fishnet, bnd_zones, analysis_area)
-  arcpy.DefineProjection_management(analysis_area, projection)
+  #arcpy.DefineProjection_management(analysis_area, projection)
 
    #-----------------------------------------------
    #-----------------------------------------------
@@ -434,13 +460,13 @@ def align():
     temp = os.path.join(scratchws, "temp.tif")
 
     arcpy.LasDatasetToRaster_conversion(lasd, las_dem, "ELEVATION", "BINNING MINIMUM LINEAR", "FLOAT", "CELLSIZE", cell_size, "")
-    this = Float(las_dem)*0.3048
+    this = Float(las_dem)#*0.3048
     this.save(temp)
     arcpy.ProjectRaster_management(temp, raw_dem, projection, "BILINEAR")
     #
     # Create DSM
     arcpy.LasDatasetToRaster_conversion(lasd, las_dsm, "ELEVATION", "BINNING MAXIMUM SIMPLE", "FLOAT", "CELLSIZE", cell_size, "")
-    this = Float(las_dsm)*0.3048
+    this = Float(las_dsm)#*0.3048
     this.save(temp)
     arcpy.ProjectRaster_management(temp, raw_dsm, projection, "BILINEAR")
 
@@ -449,43 +475,27 @@ def align():
     hts_interm1 = os.path.join(scratchws,"hts_interm1.tif")
     hts_interm2 = os.path.join(scratchws,"hts_interm2.tif")
     heights_sp = os.path.join(scratchws, "hts_sp.tif")
-    heights = os.path.join(inputs,"heights.tif")
+    raw_heights = os.path.join(inputs,"heights.tif")
 
     ht = Float(raw_dsm)-Float(raw_dem)
     ht = Con(IsNull(Float(ht)), 0, Float(ht))
     ht = Con(Float(ht) < 0, 0, Float(ht))
-    ht.save(heights_sp)
-    arcpy.ProjectRaster_management(heights_sp, heights, projection, "BILINEAR")
-
+    ht.save(raw_heights)
 
   if process_lidar == "Yes":
-
     lasToHeights()
-  #Heights
-  text = "Resampling heights."
-  generateMessage(text)
 
-  factor = float(cell_size)/float(scale_naip) # scale naiip
-  arcpy.Resample_management(raw_heights, heights, str(scale_naip) + " " + str(scale_naip), "BILINEAR") # Bilinear Interpolation reduce image distortion when scaling.It linearly interpolates the nearest 4 pixels
-  this = Aggregate(heights, factor, "MEDIAN") # Aggregate cells by maximum to preserve max heights
-  arcpy.DefineProjection_management(this, projection)
-  this = ExtractByMask(this, bnd_zones_rast) # Extract scaled
+  heights = os.path.join(outputs, "heights_"+coarsening_size+"m.tif")  # Resampled heights in native units
+  #this = Aggregate(raw_heights, coarsening_size, "MEDIAN")
+  #arcpy.ProjectRaster_management(heights_sp, heights, projection, "BILINEAR")
+  arcpy.env.snapRaster = naip
+
+  this = ExtractByMask(raw_heights, bnd_zones_rast) # Extract scaled
   this.save(heights)
 
-  #DEM
-  text = "Resampling DEM."
-  generateMessage(text)
-
-
-  arcpy.env.snapRaster = naip
-  factor = float(cell_size)/float(scale_height)
-  arcpy.Resample_management(raw_dem, dem, str(scale_height) + " " + str(scale_height), "BILINEAR")
-  this = Aggregate(dem, factor, "MEDIAN")
-  arcpy.DefineProjection_management(this, projection)
-  this = ExtractByMask(this, bnd_zones_rast)
+  this = ExtractByMask(raw_dem, bnd_zones_rast) # Extract scaled
   this.save(dem)
-  #-----------------------------------------------
-  #-----------------------------------------------
+
 
   if pipe_analysis == "Yes":
 
@@ -514,7 +524,7 @@ def align():
     arcpy.ProjectRaster_management(pipe_rast, pipe_proj, bnd_zones, "BILINEAR", str(cell_size) +" "+str(cell_size))
     this = ExtractByMask(pipe_proj, bnd_zones)
     this.save(pipe_buffer_clip)
-    arcpy.RasterToPolygon_conversion(pipe_buffer_clip, pipe_buffer, "NO_SIMPLIFY")
+    arcpy.RasterToPolygon_conversion(pipe_buffer_clip, bnd_zones, "NO_SIMPLIFY")
 
     # determine what tiles the pipeline falls within
     text = "Finding fishnet tiles containing pipleline."
@@ -529,7 +539,7 @@ def align():
       where_clause = "FID = " + str(tile_num)
 
       arcpy.Select_analysis(analysis_area, tile, where_clause)
-      arcpy.Clip_analysis(pipe_buffer, tile, pipe_tile)
+      arcpy.Clip_analysis(bnd_zones, tile, pipe_tile)
       if arcpy.management.GetCount(pipe_tile)[0] != "0":
         pipe_in_tile.extend([pipe_tile])
       else:
@@ -571,20 +581,11 @@ if align_inputs == "Yes":
 #-----------------------------------------------
 def gen_lc():
 
-  create_obia = "No"
-  classify_landscape = "No"
-  run_svm = "No"
-  merge_landcover_tiles = "No"
-
-  processes = [
-  [create_obia, "Creating Objects"],
-  [classify_landscape, "Classifying Landscape"],
-  [merge_landcover_tiles,"merge_landcover_tiles"]
-  ]
-
-  for process in processes:
-    if process:
-      arcpy.AddMessage(process[1])
+  create_obia = "Yes"
+  classify_landscape = "Yes"
+  run_svm = "Yes"
+  merge_landcover_tiles = "Yes"
+  generate_ascii = "Yes"
 
   # Iterate through all zones (if possible)
   tot_num_tiles = arcpy.management.GetCount(analysis_area)[0]
@@ -592,42 +593,56 @@ def gen_lc():
   landscape_analysis = []
   searchcursor = arcpy.SearchCursor(analysis_area)
   zones = searchcursor.next()
+  global ts
+  ts = time.time()
+
+  arcpy.AddField_management(bnd_zones, "Shape_area", "DOUBLE")
+  arcpy.CalculateField_management(bnd_zones, "Shape_area", "!SHAPE.AREA@SQUAREKILOMETERS!", "PYTHON_9.3")
+  cursor = arcpy.SearchCursor(bnd_zones)
+  global total_area
+  for row in cursor:
+    total_area = row.getValue("Shape_area")
+
   while zones:
     zone_num = zones.getValue("FID")
-    if zone_num < -1:  #No 31,32
+    if zone_num <= -1:  #No 31,32
       #If tile is created already, skip to next in queue
       zones = searchcursor.next()
 
     else:
       sms_fc = os.path.join(scratchgdb, "sms_fc_"+str(zone_num))
-      #if zone_num == 33:
-      scratchgdb = os.path.join(scratchws, "Scratch.gdb")
-      #else:
-      #  scratchgdb = os.path.join(scratchws, "Scratch2.gdb")
-      landscape_fc = os.path.join(scratchgdb, "landscape_fc_"+str(zone_num))
+      landscape_fc = os.path.join(scratchws, "landscape_fc_"+str(zone_num)+".shp")
 
       def obia():
         text = "Running an OBIA for zone "+str(zone_num+1)+" of "+str(tot_num_tiles)+"."
         newProcess(text)
 
         #Variables
-        bnd = os.path.join(outputs, "zone_"+str(zone_num)+".shp")
-        bnd_rast = os.path.join(outputs, "bnd.tif")
-        where_clause = "FID = " + str(zone_num)
-        naip_zone = os.path.join(outputs, "naip_zone_"+str(zone_num)+".tif")
+        sms_fc = os.path.join(scratchgdb, "sms_fc_"+str(zone_num))
+        bnd = os.path.join(scratchws, "zone_"+str(zone_num)+".shp")
+        bnd_rast = os.path.join(scratchws, "bnd.tif")
+        naip_zone = os.path.join(scratchws, "naip_zone_"+str(zone_num)+".tif")
         naip_zone_b1 = os.path.join(naip_zone, "Band_1")
         naip_zone_b2 = os.path.join(naip_zone, "Band_2")
         naip_zone_b3 = os.path.join(naip_zone, "Band_3")
         naip_zone_b4 = os.path.join(naip_zone, "Band_4")
         heights_zone = os.path.join(outputs, "height_zone_"+str(zone_num)+".tif")
         naip_sms = os.path.join(scratchgdb, "naip_sms_"+str(zone_num))
-        sms_fc = os.path.join(scratchgdb, "sms_fc_"+str(zone_num))
 
 
 
         # Create zone boundary and extract NAIP and heights
-
+        where_clause = "FID = " + str(zone_num)
         arcpy.Select_analysis(analysis_area, bnd, where_clause)
+
+        arcpy.AddField_management(bnd, "Shape_area", "DOUBLE")
+        arcpy.CalculateField_management(bnd, "Shape_area", "!SHAPE.AREA@SQUAREKILOMETERS!", "PYTHON_9.3")
+        cursor = arcpy.SearchCursor(bnd)
+        global zone_area
+        for row in cursor:
+          zone_area = row.getValue("Shape_area")
+
+
         this = ExtractByMask(naip, bnd)
         this.save(naip_zone)
         this = ExtractByMask(heights, bnd)
@@ -651,6 +666,8 @@ def gen_lc():
         surfaces = ["ground", "nonground"]
 
         #Variables
+
+        #Variables - temporary
         ground_mask_seg = os.path.join(scratchgdb, "ground_mask_seg")
         ground_mask_poly = os.path.join(scratchgdb, "ground_mask_poly")
         nonground_mask_poly = os.path.join(scratchgdb, "nonground_mask_poly")
@@ -665,13 +682,10 @@ def gen_lc():
 
         #Find minimum cell area
         min_cell_area = int(float(str(arcpy.GetRasterProperties_management(naip, "CELLSIZEX", "")))**2)+1
-        where_clause = "Shape_Area > " + str(min_cell_area)
 
         # Create masks for ground and nonground features according to ground_ht_threshold
         if unit == "Meters":
           ground_ht_threshold = 0.6096
-        elif unit == "Feet":
-          ground_ht_threshold = 2
 
         # Find cell size of imagery
         cell_size = str(arcpy.GetRasterProperties_management(naip, "CELLSIZEX", ""))
@@ -684,6 +698,7 @@ def gen_lc():
           arcpy.Dissolve_management(ground_mask_raw, ground_dissolve_output)
 
           # A process of clipping polygons and erasing rasters
+          where_clause = "Shape_Area > " + str(min_cell_area)
           arcpy.Erase_analysis(bnd, ground_dissolve_output, nonground_mask_raw)
           arcpy.PolygonToRaster_conversion(nonground_mask_raw, "OBJECTID", nonground_mask_raster, "CELL_CENTER", "", cell_size)
           arcpy.RasterToPolygon_conversion(nonground_mask_raster, nonground_mask_raw, "NO_SIMPLIFY", "VALUE")
@@ -718,7 +733,7 @@ def gen_lc():
           text = "Extracting NAIP imagery by "+ surface + " mask."
           generateMessage(text)
 
-          #Variables
+          #Variables - temporary
           sms_raster = os.path.join(outputs, surface+"_sms_raster.tif")
           naip_fc =  os.path.join(scratchgdb, surface + "_naip_fc")
           mask_poly = os.path.join(scratchgdb, surface+ "_mask_poly")
@@ -751,6 +766,7 @@ def gen_lc():
           arcpy.RasterToPolygon_conversion(sms_raster, naip_fc, "NO_SIMPLIFY", "VALUE")
           arcpy.Clip_analysis(naip_fc, mask_poly, sms)
           naip_lst.extend([sms])
+
           #-----------------------------------------------
           #-----------------------------------------------
 
@@ -782,13 +798,14 @@ def gen_lc():
         text = "Calculating zonal majority of each spectral enhancement for each object."
         generateMessage(text)
         for ie in created_enhancements_1m:
-          field = image_enhancements.pop(0)
+          
           outTable = os.path.join(scratchgdb, "zonal_"+os.path.basename(ie))
-          z_stat = ZonalStatisticsAsTable(sms_fc, "JOIN", ie, outTable, "NODATA", "MAJORITY")
-          arcpy.AddField_management(outTable, field, "INTEGER")
-          arcpy.CalculateField_management(outTable, field, "[MAJORITY]")
-          one_to_one_join(sms_fc, outTable, field, "INTEGER")
 
+          field = image_enhancements.pop(0)
+          z_stat = ZonalStatisticsAsTable(sms_fc, "JOIN", ie, outTable, "NODATA", "MEDIAN")
+          arcpy.AddField_management(outTable, field, "INTEGER")
+          arcpy.CalculateField_management(outTable, field, "[MEDIAN]")
+          one_to_one_join(sms_fc, outTable, field, "INTEGER")
         arcpy.DefineProjection_management(sms_fc, projection)
         #-----------------------------------------------
         #-----------------------------------------------
@@ -810,311 +827,252 @@ def gen_lc():
 
       #-----------------------------------------------
       #-----------------------------------------------
-      def classify(stage, landcover, field):
-        if stage == "S1":
-          if field == "S1_grid":
-            threshold = get_thresholds(bioregion, stage, landcover, field, unit)
-            healthy = threshold[0]
-            dry = threshold[1]
-            return("def landcover(x):\\n"+
-                   "  if x "+healthy+":\\n"+
-                   "    return \"healthy\"\\n"+
-                   "  elif x "+dry+":\\n"+
-                   "    return \"senescent\"\\n"+
-                   "  return \"impervious\""
-                   )
 
-          elif "S1_" in field:
-            threshold = get_thresholds(bioregion, stage, landcover, field, unit)
-            imp = threshold[0]
-            veg = threshold[1]
-            return ("def landcover(x):\\n"+
-                   "  membership = \"\"\\n"+
-                   "  if "+imp+":\\n"+
-                   "    membership += \"I\"\\n"+
-                   "  if "+veg+":\\n"+
-                   "    membership += \"V\"\\n"+
-                   "  return membership\\n"
-                   )
-
-          elif field == "S1":
-            return("def landcover(a,b,c,d):\\n"+
-                   "  membership = a+b+c+d\\n"+
-                   "  V,I = 0,0\\n"+
-                   "  for m in membership:\\n"+
-                   "    if m == \"V\":\\n"+
-                   "      V += 1\\n"+
-                   "    if m == \"I\":\\n"+
-                   "      I += 1\\n"+
-                   "  if V > I:\\n"+
-                   "    return \"vegetation\"\\n"+
-                   "  elif I > V:\\n"+
-                   "    return \"impervious\"\\n"+
-                   "  else:\\n"+
-                   "    return \"confusion\"\\n"
-                   )
-        elif stage == "tree":
-          if "tree_" in field:
-            threshold = get_thresholds(bioregion, stage, landcover, field, unit)
-            healthy = threshold[0]
-            senescent = threshold[1]
-            return ("def landcover(x):\\n"+
-                     "  membership = \"\"\\n"+
-                     "  if "+healthy+":\\n"+
-                     "    membership += \"H\"\\n"+
-                     "  if "+senescent+":\\n"+
-                     "    membership += \"S\"\\n"+
-                     "  return membership\\n"
-                     )
-          elif field == "S2":
-            return("def landcover(a,b,c,d):\\n"+
-                   "  membership = a+b+c+d\\n"+
-                   "  H,S = 0,0\\n"+
-                   "  for m in membership:\\n"+
-                   "    if m == \"H\":\\n"+
-                   "      H += 1\\n"+
-                   "    if m == \"S\":\\n"+
-                   "      S += 1\\n"+
-                   "  if H < S:\\n"+
-                   "    return \"senescent_tree\"\\n"+
-                   "  return \"healthy_tree\"\\n"
-                     )
 
       # Assigns classess
-      def createClassMembership(stage, landcover, field, field_lst, output):
-        if field in stages:
-          field_lst = field_lst[:-2]
-          fxn = "landcover("+field_lst+")"
+      def createClassMembership(fc, stage, field, evaluator, fxn):
+        def classify():
+          if stage == "S1":
+            if evaluator:
+              imp = evaluator[0]
+              veg = evaluator[1]
+              return ("def landcover(x):\\n"+
+                     "  membership = \"\"\\n"+
+                     "  if "+imp+":\\n"+
+                     "    membership += \"I\"\\n"+
+                     "  if "+veg+":\\n"+
+                     "    membership += \"V\"\\n"+
+                     "  return membership\\n"
+                     )
+            else:
+              return("def landcover(a,b,c,d):\\n"+
+                     "  membership = a+b+c+d\\n"+
+                     "  V,I = 0,0\\n"+
+                     "  for m in membership:\\n"+
+                     "    if m == \"V\":\\n"+
+                     "      V += 1\\n"+
+                     "    if m == \"I\":\\n"+
+                     "      I += 1\\n"+
+                     "  if V > I:\\n"+
+                     "    return \"vegetation\"\\n"+
+                     "  elif I > V:\\n"+
+                     "    return \"impervious\"\\n"+
+                     "  else:\\n"+
+                     "    return \"confusion\"\\n"
+                     )
+              
+          elif stage == "S2":
+            if evaluator:
+              healthy = evaluator[0]
+              senescent = evaluator[1]
+              return ("def landcover(x):\\n"+
+                       "  membership = \"\"\\n"+
+                       "  if "+healthy+":\\n"+
+                       "    membership += \"H\"\\n"+
+                       "  if "+senescent+":\\n"+
+                       "    membership += \"S\"\\n"+
+                       "  return membership\\n"
+                       )
+            else:
+              return("def landcover(a,b):\\n"+
+                     "  membership = a+b\\n"+
+                     "  H,S = 0,0\\n"+
+                     "  for m in membership:\\n"+
+                     "    if m == \"H\":\\n"+
+                     "      H += 1\\n"+
+                     "    if m == \"S\":\\n"+
+                     "      S += 1\\n"+
+                     "  if H < S:\\n"+
+                     "    return \"senescent_tree\"\\n"+
+                     "  return \"healthy_tree\"\\n"
+                       )
 
-        elif stage == "tree":
-          index = field
-          field = stage+"_"+field
-          field_lst += "!"+field+"!, "
-          fxn = "landcover(!"+index+"!)"
-
-        else:
-          index = field
-          field = stage+"_"+field[:4]
-          field_lst += "!"+field+"!, "
-          fxn = "landcover(!"+index+"!)"
-
-        label_class = classify(stage, landcover, field)
-        arcpy.AddField_management(output, field, "TEXT")
-        arcpy.CalculateField_management(output, field, fxn, "PYTHON_9.3", label_class)
-        return field_lst
+        arcpy.AddField_management(fc, "_"+field, "TEXT")
+        arcpy.CalculateField_management(fc, "_"+field, fxn, "PYTHON_9.3", classify())
       #-----------------------------------------------
       #-----------------------------------------------
 
       #-----------------------------------------------
       #-----------------------------------------------
       # Classifier methods
+
+      location = Fire_Env(bioregion)
+
       stages = ["S1","S2"]
-      class_structure = [
-                         ["vegetation",
-                              ["grass", "shrub", "tree"]],
-                         ["impervious",
-                              ["nonburnable"]]
-                        ]
 
       # Indices used for each stage of classification
-      s1_indices = ["ndvi", "ndwi", "gndvi", "osavi"]#, "gridcode"]
-      s2_indices = ["height"]#, "gridcode"]
+      indices = location.spectral_indices
 
       def classify_objects():
-        lst_merge = []
-        veg_lst = []
-        imp_lst = []
-
         for stage in stages:
           text = "Executing Stage "+str(stage)+" classification."
-          newProcess(text)
+          generateMessage(text)
 
           # Stage 1 classification workflow
           if stage == "S1":
-            s1_indices.extend([stage])
-            field_lst = ""
-            for field in s1_indices:
-
-              # Assign full membership
-              if field == "S1":
-                text = "Creating primitive-type objects."
-                generateMessage(text)
-
-                # Classification method
-                createClassMembership(stage, "", field, field_lst, sms_fc)
-
-                # Create new shapefiles with primitive classess
-                for primitive in class_structure:
-                  landcover = primitive[0]
-                  output = os.path.join(outputs, landcover+"_"+str(zone_num)+".shp")
-                  where_clause = "S1 = '" + landcover + "'"
-                  arcpy.Select_analysis(sms_fc, output, where_clause)
-
-
-              # Assign partial membership
-              else:
-                text = "Classifying objects by "+field+"."
-                generateMessage(text)
-                field_lst = createClassMembership(stage, "", field, field_lst, sms_fc)
-
+            ndvi = createClassMembership(sms_fc, stage, "ndvi", location.S1_ndvi, "landcover(!ndvi!)")
+            gndvi = createClassMembership(sms_fc, stage, "gndvi", location.S1_gndvi, "landcover(!gndvi!)")
+            ndwi = createClassMembership(sms_fc, stage, "ndwi", location.S1_ndwi, "landcover(!ndwi!)")
+            osavi = createClassMembership(sms_fc, stage, "osavi", location.S1_osavi, "landcover(!osavi!)")
+            s1 = createClassMembership(sms_fc, stage, "S1", "", "landcover(!_ndvi!,!_gndvi!,!_ndwi!,!_osavi!)")
             #-----------------------------------------------
             #-----------------------------------------------
             
-              text = "Classifying confused land cover with SVM."
-              newProcess(text)
+            text = "Classifying confused land cover with SVM."
+            generateMessage(text)
 
-              # Variables
-              confused = os.path.join(outputs, "confused.shp")
-              veg_join = os.path.join(scratchgdb, "veg_join")
-              training_samples = os.path.join(outputs, "training_fc.shp")
-              merged = os.path.join(scratchgdb, "merged_imp_veg")
-              composite = os.path.join(outputs, "composite.tif")
-              confused_composite = os.path.join(outputs, "confused_composite.tif")
-              confused_composite_rast = os.path.join(scratchws, "confused_composit_rast.tif")
-              veg_imp = os.path.join(scratchws, "veg_imp.shp")
+            # Variables
+            confused = os.path.join(scratchws, "confused.shp")
+            veg_join = os.path.join(scratchgdb, "veg_join")
+            training_samples = os.path.join(scratchws, "training_fc.shp")
+            merged = os.path.join(scratchgdb, "merged_imp_veg")
+            composite = os.path.join(scratchws, "composite.tif")
+            confused_composite = os.path.join(scratchws, "confused_composite.tif")
+            confused_composite_rast = os.path.join(scratchws, "confused_composit_rast.tif")
+            veg_imp = os.path.join(scratchws, "veg_imp.shp")
 
-              # Create dataset with only confused objects
-              text = "Creating confused objects."
+            # Create dataset with only confused objects
+            text = "Creating confused objects."
+            generateMessage(text)
+
+            arcpy.Select_analysis(sms_fc, confused, "_S1 = 'confusion'")
+            if arcpy.management.GetCount(confused)[0] != "0":
+
+              # Indices used as bands in raster for SVM
+              band_lst = ["ndvi", "ndwi", "height"]
+
+              # Creating Layer composite
+              text = "Creating LiDAR-Multispectral stack."
               generateMessage(text)
 
-              arcpy.Select_analysis(sms_fc, confused, "S1 = 'confusion'")
-              if arcpy.management.GetCount(confused)[0] != "0":
+              confused_ie_lst = []
+              bands_5m = createImageEnhancements(band_lst, naip, heights, "5m", scratchgdb)
+              arcpy.CompositeBands_management(bands_5m, composite)
+              arcpy.DefineProjection_management(composite, projection)
+              #-----------------------------------------------
+              #-----------------------------------------------
 
-                # Indices used as bands in raster for SVM
-                band_lst = ["ndvi", "ndwi", "height"]
+              #-----------------------------------------------
+              #-----------------------------------------------
+              text = "Preparing training samples for SVM."
+              generateMessage(text)
 
-                # Creating Layer composite
-                text = "Creating LiDAR-Multispectral stack."
-                generateMessage(text)
+              # Variables
+              svm_training = os.path.join(scratchws, "svm_training.shp")
+              training_fields = [["Classname", "TEXT"], ["Classvalue", "LONG"], ["RED", "LONG"], ["GREEN", "LONG"], ["BLUE", "LONG"], ["Count", "LONG"]]
+              zonal_training = os.path.join(scratchgdb, "zonal_train")
 
-                confused_ie_lst = []
-                bands_5m = createImageEnhancements(band_lst, naip, heights, "5m", scratchgdb)
-                arcpy.CompositeBands_management(bands_5m, composite)
-                arcpy.DefineProjection_management(composite, projection)
-                #-----------------------------------------------
-                #-----------------------------------------------
+              # Adding the appropriate fields for training samples
+              #arcpy.FeatureClassToFeatureClass_conversion (training_samples, outputs, "svm_training")
+              def classvalue():
+                return ("def classvalue(x):\\n"+
+                         "  if x == \"vegetation\":\\n"+
+                         "    return 0\\n"+
+                         "  elif x == \"impervious\": \\n"+
+                         "    return 1\\n"
+                         )
 
-                #-----------------------------------------------
-                #-----------------------------------------------
-                text = "Preparing training samples for SVM."
-                generateMessage(text)
+              arcpy.Select_analysis(sms_fc, svm_training, "_S1 <> 'confusion'")
+              for field in training_fields:
+                field_name = field[0]
+                field_type = field[1]
+                arcpy.AddField_management(svm_training, field_name, field_type)
 
-                # Variables
-                svm_training = os.path.join(outputs, "svm_training.shp")
-                training_fields = [["Classname", "TEXT"], ["Classvalue", "LONG"], ["RED", "LONG"], ["GREEN", "LONG"], ["BLUE", "LONG"], ["Count", "LONG"]]
-                zonal_training = os.path.join(scratchgdb, "zonal_train")
+              # Calculating attributes for training samples
+              arcpy.AddField_management(svm_training, "JOIN", "INTEGER")
+              arcpy.CalculateField_management(svm_training, "JOIN", "[FID]")
+              z_stat = ZonalStatisticsAsTable(svm_training, "JOIN", composite, zonal_training, "NODATA", "ALL")
+              arcpy.AddField_management(svm_training, "COUNT", "LONG")
+              one_to_one_join(svm_training, zonal_training, "COUNT", "INTEGER")
+              arcpy.CalculateField_management(svm_training, "Classname", "[_S1]")
+              arcpy.CalculateField_management(svm_training, "Classvalue", "classvalue(!_S1!)", "PYTHON_9.3", classvalue())
+              arcpy.CalculateField_management(svm_training, "RED", 1)
+              arcpy.CalculateField_management(svm_training, "GREEN", 1)
+              arcpy.CalculateField_management(svm_training, "BLUE", 1)
+              arcpy.CalculateField_management(svm_training, "COUNT", "[COUNT]")
 
-                # Adding the appropriate fields for training samples
-                #arcpy.FeatureClassToFeatureClass_conversion (training_samples, outputs, "svm_training")
-                def classvalue():
-                  return ("def classvalue(x):\\n"+
-                           "  if x == \"vegetation\":\\n"+
-                           "    return 0\\n"+
-                           "  elif x == \"impervious\": \\n"+
-                           "    return 1\\n"
-                           )
+              # Removing unnecessary fields for training samples
+              fields = [f.name for f in arcpy.ListFields(svm_training)]
+              delete_fields = []
+              for field in fields:
+                if field not in ["FID", "Shape", "Shape_Area", "Shape_Length", "Classname", "Classvalue", "RED", "GREEN", "BLUE", "Count"]:
+                  delete_fields.append(field)
+              arcpy.DeleteField_management(svm_training, delete_fields)
 
-                arcpy.Select_analysis(sms_fc, svm_training, "S1 <> 'confusion'")
-                for field in training_fields:
-                  field_name = field[0]
-                  field_type = field[1]
-                  arcpy.AddField_management(svm_training, field_name, field_type)
+              # Parameters used for SVM
+              out_definition = os.path.join(scratchws, "svm_classifier.ecd")
+              maxNumSamples = "100"
+              attributes = "" #[COLOR, SHAPE, etc.]
+              # No color because color isn't related to land cover type
+              # No to shape because shape isn't associated with any type
+              #-----------------------------------------------
+              #-----------------------------------------------
 
-                # Calculating attributes for training samples
-                arcpy.AddField_management(svm_training, "JOIN", "INTEGER")
-                arcpy.CalculateField_management(svm_training, "JOIN", "[FID]")
-                z_stat = ZonalStatisticsAsTable(svm_training, "JOIN", composite, zonal_training, "NODATA", "ALL")
-                arcpy.AddField_management(svm_training, "COUNT", "LONG")
-                one_to_one_join(svm_training, zonal_training, "COUNT", "INTEGER")
-                arcpy.CalculateField_management(svm_training, "Classname", "[S1]")
-                arcpy.CalculateField_management(svm_training, "Classvalue", "classvalue(!S1!)", "PYTHON_9.3", classvalue())
-                arcpy.CalculateField_management(svm_training, "RED", 1)
-                arcpy.CalculateField_management(svm_training, "GREEN", 1)
-                arcpy.CalculateField_management(svm_training, "BLUE", 1)
-                arcpy.CalculateField_management(svm_training, "COUNT", "[COUNT]")
+              #-----------------------------------------------
+              #-----------------------------------------------
+              text = "Classifying composite using Support Vector Machines."
+              generateMessage(text)
 
-                # Removing unnecessary fields for training samples
-                fields = [f.name for f in arcpy.ListFields(svm_training)]
-                delete_fields = []
-                for field in fields:
-                  if field not in ["FID", "Shape", "Shape_Area", "Shape_Length", "Classname", "Classvalue", "RED", "GREEN", "BLUE", "Count"]:
-                    delete_fields.append(field)
-                arcpy.DeleteField_management(svm_training, delete_fields)
+              # Variables
+              svm = os.path.join(scratchws, "svm.tif")
 
-                # Parameters used for SVM
-                out_definition = os.path.join(outputs, "svm_classifier.ecd")
-                maxNumSamples = "100"
-                attributes = "" #[COLOR, SHAPE, etc.]
-                # No color because color isn't related to land cover type
-                # No to shape because shape isn't associated with any type
-                #-----------------------------------------------
-                #-----------------------------------------------
+              # Creating classifier rule from training samples
+              arcpy.gp.TrainSupportVectorMachineClassifier(composite, svm_training, out_definition, "", maxNumSamples, attributes)
 
-                #-----------------------------------------------
-                #-----------------------------------------------
-                text = "Classifying composite using Support Vector Machines."
-                generateMessage(text)
+              # Classifying raster with pixel-based method, not segmented raster
 
-                # Variables
-                svm = os.path.join(outputs, "svm.tif")
+              for ie in bands_5m:
+                band = os.path.basename(ie)
+                confused_ie = os.path.join(scratchgdb, "confused_"+band)
+                this = ExtractByMask(ie, confused)
+                this = Con(IsNull(Float(this)), -10000, Float(this))
+                this.save(confused_ie)
+                confused_ie_lst.extend([confused_ie])
+              arcpy.CompositeBands_management(confused_ie_lst, composite)
+              classifiedraster = ClassifyRaster(composite, out_definition, "")
+              classifiedraster.save(svm)
 
-                # Creating classifier rule from training samples
-                arcpy.gp.TrainSupportVectorMachineClassifier(composite, svm_training, out_definition, "", maxNumSamples, attributes)
+              #-----------------------------------------------
+              #-----------------------------------------------
 
-                # Classifying raster with pixel-based method, not segmented raster
+              #-----------------------------------------------
+              #-----------------------------------------------
+              text = "Classifying 'Confused' objects with SVM outputs."
+              generateMessage(text)
 
-                for ie in bands_5m:
-                  band = os.path.basename(ie)
-                  confused_ie = os.path.join(scratchgdb, "confused_"+band)
-                  this = ExtractByMask(ie, confused)
-                  this = Con(IsNull(Float(this)), -10000, Float(this))
-                  this.save(confused_ie)
-                  confused_ie_lst.extend([confused_ie])
-                arcpy.CompositeBands_management(confused_ie_lst, composite)
-                classifiedraster = ClassifyRaster(composite, out_definition, "")
-                classifiedraster.save(svm)
+              # Variables
+              zonal_svm = os.path.join(scratchgdb, "zonal_svm")
 
-                #-----------------------------------------------
-                #-----------------------------------------------
+              ## Joining zonal majority to confused object
 
-                #-----------------------------------------------
-                #-----------------------------------------------
-                text = "Classifying 'Confused' objects with SVM outputs."
-                generateMessage(text)
+              z_stat = ZonalStatisticsAsTable(confused, "JOIN", svm, zonal_svm, "NODATA", "MAJORITY")
+              arcpy.AddField_management(confused, "MAJORITY", "LONG")
+              one_to_one_join(confused, zonal_svm, "MAJORITY", "LONG")
 
-                # Variables
-                zonal_svm = os.path.join(scratchgdb, "zonal_svm")
+              # Assigning land cover to 'Confused' objects
+              def classify_confusion():
+                vegetation = "x == 0"
+                impervious = "x == 1"
+                return("def landcover(x):\\n"+
+                             "  if "+vegetation+":\\n"+
+                             "    return \"vegetation\"\\n"+
+                             "  elif "+impervious+":\\n"+
+                             "    return \"impervious\"\\n"
+                             )
+              arcpy.CalculateField_management(confused, "_S1", "landcover(!MAJORITY!)", "PYTHON_9.3", classify_confusion())
+              #-----------------------------------------------
+              #-----------------------------------------------
 
-                ## Joining zonal majority to confused object
+              #-----------------------------------------------
+              #-----------------------------------------------
+              text = "Creating contiguously classified primitive land cover."
+              generateMessage(text)
 
-                z_stat = ZonalStatisticsAsTable(confused, "JOIN", svm, zonal_svm, "NODATA", "MAJORITY")
-                arcpy.AddField_management(confused, "MAJORITY", "LONG")
-                one_to_one_join(confused, zonal_svm, "MAJORITY", "LONG")
-
-                # Assigning land cover to 'Confused' objects
-                def classify_confusion():
-                  vegetation = "x == 0"
-                  impervious = "x == 1"
-                  return("def landcover(x):\\n"+
-                               "  if "+vegetation+":\\n"+
-                               "    return \"vegetation\"\\n"+
-                               "  elif "+impervious+":\\n"+
-                               "    return \"impervious\"\\n"
-                               )
-                arcpy.CalculateField_management(confused, "S1", "landcover(!MAJORITY!)", "PYTHON_9.3", classify_confusion())
-                #-----------------------------------------------
-                #-----------------------------------------------
-
-                #-----------------------------------------------
-                #-----------------------------------------------
-                text = "Creating contiguously classified primitive land cover."
-                generateMessage(text)
-
-                # Merging all layers back together as classified layer
-                arcpy.Select_analysis(sms_fc, veg_imp, "S1 <> 'confusion'")
-                arcpy.Merge_management([confused, veg_imp], S1_classified)
-              else:
-                arcpy.Select_analysis(sms_fc, S1_classified, "S1 <> 'confusion'")
+              # Merging all layers back together as classified layer
+              arcpy.Select_analysis(sms_fc, veg_imp, "_S1 <> 'confusion'")
+              arcpy.Merge_management([confused, veg_imp], S1_classified)
+            else:
+              arcpy.Select_analysis(sms_fc, S1_classified, "_S1 <> 'confusion'")
 
           
           #-----------------------------------------------
@@ -1123,156 +1081,137 @@ def gen_lc():
           # Stage 2 classification workflow
           elif stage == "S2":
 
-            s2_indices.extend([stage])
             features = []
-            for primitive in class_structure:
-              landcover = primitive[0]
+            covers = location.fuels
+            #arcpy.AddMessage(covers)
+            for cover in covers:
+              class landcover:
+                def __init__(self, cover):
+                  self.stage = cover[0]
+                  self.fuel_model = cover[1]
+                  self.min_height = cover[2][0]
+                  self.max_height = cover[2][1]
+                  self.spectral_detail = cover[3][0]
+                  self.spatial_detail = cover[3][1]
+                  self.min_seg_size = cover[3][2]
+
+              lc = landcover(cover)
+
+              if lc.stage == "nonburnable":
+                landcover = "impervious"
+              else:
+                landcover = "vegetation"
+
               s1_heights = os.path.join(scratchgdb, landcover+"_heights")
               heights_zone = os.path.join(outputs, "height_zone_"+str(zone_num)+".tif")
-              primitive_mask = os.path.join(outputs, landcover+"_"+str(zone_num)+".shp")
+              primitive_mask = os.path.join(scratchws, landcover+"_"+str(zone_num)+".shp")
               cm_heights = os.path.join(scratchgdb, "cm_heights")
 
-              text = "Preparing "+landcover+" height surfaces."
-              generateMessage(text)
-
-              arcpy.Select_analysis(S1_classified, primitive_mask, "S1 = '"+landcover+"'")
-              this = Int(Float(heights)*30.48)
+              arcpy.Select_analysis(S1_classified, primitive_mask, "_S1 = '"+landcover+"'")
+              this = Int(Float(heights)*100)
               this.save(cm_heights)
               if arcpy.management.GetCount(primitive_mask)[0] != "0":
                 this = ExtractByMask(cm_heights, primitive_mask)
                 this.save(s1_heights)
 
                 stage_output = os.path.join(outputs, landcover+"_"+str(zone_num)+".shp")
-                field_lst = ""
-                s2 = primitive[1]
+                stage_rast = os.path.join(scratchgdb, lc.stage)
+                stage_mask = os.path.join(scratchgdb, lc.stage+"_mask")
+                naip_fuel = os.path.join(scratchgdb, "naip_"+lc.stage)
+                fuel_sms_rast = os.path.join(scratchgdb, lc.stage+"_sms_rast")
+                fuel_sms = os.path.join(scratchgdb, lc.stage+"_sms")
+                fuel_fc = os.path.join(scratchgdb, lc.stage+"_fc")
 
-                for stage in s2:
-                  stage_rast = os.path.join(scratchgdb, stage)
-                  stage_mask = os.path.join(scratchgdb, stage+"_mask")
-                  naip_fuel = os.path.join(scratchgdb, "naip_"+stage)
-                  fuel_sms_rast = os.path.join(scratchgdb, stage+"_sms_rast")
-                  fuel_sms = os.path.join(scratchgdb, stage+"_sms")
-                  fuel_fc = os.path.join(scratchgdb, stage+"_fc")
+                text = "Creating "+ lc.stage +" objects."
+                generateMessage(text)
 
-                  text = "Creating "+ stage +" objects."
-                  generateMessage(text)
-
-                  if stage == "nonburnable":
-                    arcpy.Select_analysis(S1_classified, fuel_fc, "S1 = 'impervious'")
-                    arcpy.AddField_management(fuel_fc, "S2", "TEXT")
-                    arcpy.CalculateField_management(fuel_fc, "S2", "label(!S2!)", "PYTHON_9.3", "def label(x):\\n  return \"nonburnable\"\\n")
-                    fields = [f.name for f in arcpy.ListFields(fuel_fc)]
-                    delete_fields = []
-                    for field in fields:
-                      if field not in ["OBJECTID", "Shape", "Shape_Area", "Shape_Length", "ID", "S2"]:
-                        delete_fields.append(field)
-                    arcpy.DeleteField_management(fuel_fc, delete_fields)
+                if lc.stage == "nonburnable":
+                  arcpy.Select_analysis(S1_classified, fuel_fc, "_S1 = 'impervious'")
+                  if arcpy.management.GetCount(fuel_fc)[0] != "0":
+                    arcpy.AddField_management(fuel_fc, "_S2", "TEXT")
+                    arcpy.CalculateField_management(fuel_fc, "_S2", "label(!_S2!)", "PYTHON_9.3", "def label(x):\\n  return \""+lc.stage+"\"\\n")
+                    arcpy.AddField_management(fuel_fc, "fuel", "INTEGER")
+                    arcpy.CalculateField_management(fuel_fc, "fuel", lc.fuel_model)
                     features.extend([fuel_fc])
 
-                  else:
+                else:
 
-                    if stage == "grass":
-                      spectral_detail = 10
-                      spatial_detail = 10
-                      min_seg_size = 1
-                      s2 = "grass"
+                  this = Con((Int(s1_heights)>lc.min_height) & (Int(s1_heights)<=lc.max_height), 1)
+                  this.save(stage_rast)
 
-                      this = Con(Int(s1_heights)<=30.48, 1)
+                  #Clip NAIP by layer elevation
+                  if arcpy.sa.Raster(stage_rast).maximum == 1:
+                    arcpy.RasterToPolygon_conversion(stage_rast, stage_mask, "NO_SIMPLIFY", "VALUE")
+                    this = ExtractByMask(naip, stage_mask)
+                    this.save(naip_fuel)
+                    naip_raster_slide = os.path.join(scratchws, "naip_slide.tif")
+                    bands_fuel = []
+                    for i in range(4):
+                      band = os.path.join(naip_fuel, "Band_")
+                      band_raster_slide = os.path.join(scratchgdb, "bandfuel_"+str(i+1))
+                      this = Con(IsNull(Float(naip_fuel)), -10000, Float(naip_fuel))
+                      this.save(band_raster_slide)
+                      bands_fuel.extend([band_raster_slide])
+                    arcpy.CompositeBands_management(bands_fuel, naip_raster_slide)
+                    
+                    # Creating objects and clipping to surface type
+                    if arcpy.sa.Raster(naip_raster_slide).maximum > 0:
+                      if lc.stage == "tree":
 
-                    elif stage == "shrub":
+                        tree_fishnet = os.path.join(scratchgdb, "tree_fishnet_"+str(zone_num))
 
-                      spectral_detail = 20
-                      spatial_detail = 20
-                      min_seg_size = 1
-                      s2 = "shrub"
+                        desc = arcpy.Describe(stage_rast)
+                        origin_coord = str(desc.extent.XMin)+ " " +str(desc.extent.YMin)
+                        y_axis_coord = str(desc.extent.XMin)+ " " +str(desc.extent.YMax)
 
-                      this = Con((Int(s1_heights)>30.48) & (Int(s1_heights)<=304.8), 1)
+                        arcpy.CreateFishnet_management(tree_fishnet, origin_coord, y_axis_coord, coarsening_size, coarsening_size, "", "", "", "NO_LABELS", stage_rast, "POLYGON")
+                        arcpy.DefineProjection_management(tree_fishnet, projection)
+                        arcpy.Clip_analysis(tree_fishnet, stage_mask, fuel_fc)
+                        arcpy.DeleteFeatures_management(tree_fishnet)
 
-                    elif stage == "tree":
+                        arcpy.AddField_management(fuel_fc, "JOIN", "INTEGER")
+                        arcpy.CalculateField_management(fuel_fc, "JOIN", "[OBJECTID]")
 
-                      spectral_detail = 20
-                      spatial_detail = 20
-                      min_seg_size = 1
-                      s2 = "tree"
+                        # Join image enhancements to tree tiles
+                        for field in indices:
+                          outTable = os.path.join(scratchgdb, "zonal_tree_"+field+"_"+str(zone_num))
+                          ie = field+"_"+str(zone_num)
+                          z_table = ZonalStatisticsAsTable(fuel_fc, "JOIN", ie, outTable, "NODATA", "MEDIAN")
+                          arcpy.AddField_management(outTable, field, "FLOAT")
+                          arcpy.CalculateField_management(outTable, field, "[MEDIAN]")
+                          one_to_one_join(fuel_fc, outTable, field, "FLOAT")
 
-                      this = Con(Int(s1_heights)>304.8, 1)
+                        ndvi = createClassMembership(fuel_fc, stage, "ndvi", location.tree_ndvi, "landcover(!ndvi!)")                  
+                        ndwi = createClassMembership(fuel_fc, stage, "ndwi", location.tree_ndwi, "landcover(!ndwi!)")
+                        s2 = createClassMembership(fuel_fc, stage, "S2", "", "landcover(!_ndvi!,!_ndwi!)")
 
-                    this.save(stage_rast)
-                    if arcpy.sa.Raster(stage_rast).maximum == 1:
-                      arcpy.RasterToPolygon_conversion(stage_rast, stage_mask, "NO_SIMPLIFY", "VALUE")
+                        features.extend([fuel_fc])
 
-                      this = ExtractByMask(naip, stage_mask)
-                      this.save(naip_fuel)
-
-                      naip_raster_slide = os.path.join(scratchws, "naip_slide.tif")
-                      bands_fuel = []
-                      for i in range(4):
-                        band = os.path.join(naip_fuel, "Band_")
-                        band_raster_slide = os.path.join(scratchgdb, "bandfuel_"+str(i+1))
-                        this = Con(IsNull(Float(naip_fuel)), -10000, Float(naip_fuel))
-                        this.save(band_raster_slide)
-                        bands_fuel.extend([band_raster_slide])
-                      arcpy.CompositeBands_management(bands_fuel, naip_raster_slide)
-
-                      if arcpy.sa.Raster(naip_raster_slide).maximum > 0:
-
-                        # Creating objects and clipping to surface type
-                        seg_naip = SegmentMeanShift(naip_raster_slide, spectral_detail, spatial_detail, min_seg_size)
+                      else:
+                        seg_naip = SegmentMeanShift(naip_raster_slide, lc.spectral_detail, lc.spatial_detail, lc.min_seg_size)
                         seg_naip.save(fuel_sms_rast)
                         this = ExtractByMask(fuel_sms_rast, naip_fuel)
                         this.save(fuel_sms_rast)
+
                         if arcpy.sa.Raster(fuel_sms_rast).maximum > 0:
                           arcpy.RasterToPolygon_conversion(fuel_sms_rast, fuel_fc, "NO_SIMPLIFY", "VALUE")
-                          fxn = "S2()"
-                          label_class = "def S2():\\n"+"  return '"+s2+"'\\n"
-                          arcpy.AddField_management(fuel_fc, "S2", "TEXT")
-                          arcpy.CalculateField_management(fuel_fc, "S2", fxn, "PYTHON_9.3", label_class)
-                          if stage != "tree":
-                            features.extend([fuel_fc])
+                          features.extend([fuel_fc])
 
-                        # Should shrubs also be segmented this way??
-                        if stage == "tree":
-                            tree_cover = os.path.join(scratchgdb, "tree_cover")
-                            canopycover = os.path.join(scratchgdb, "canopycover")
-
-                            where_clause = "S2 = 'tree'"
-                            arcpy.Select_analysis(fuel_fc, tree_cover, where_clause)
-                            arcpy.Dissolve_management(tree_cover, canopycover)
-
-                            tree_fishnet = os.path.join(scratchgdb, "tree_fishnet_"+str(zone_num))
-
-                            desc = arcpy.Describe(canopycover)
-                            origin_coord = str(desc.extent.XMin)+ " " +str(desc.extent.YMin)
-                            y_axis_coord = str(desc.extent.XMin)+ " " +str(desc.extent.YMax)
-
-                            arcpy.CreateFishnet_management(tree_fishnet, origin_coord, y_axis_coord, coarsening_size, coarsening_size, "", "", "", "NO_LABELS", canopycover, "POLYGON")
-                            arcpy.DefineProjection_management(tree_fishnet, projection)
-                            arcpy.Clip_analysis(tree_fishnet, canopycover, fuel_fc)
-                            arcpy.DeleteFeatures_management(tree_fishnet)
-
-                            arcpy.AddField_management(fuel_fc, "JOIN", "INTEGER")
-                            arcpy.CalculateField_management(fuel_fc, "JOIN", "[OBJECTID]")
-
-                            # Join image enhancements to tree tiles
-                            for field in ["ndvi", "gndvi", "ndwi", "osavi"]:
-                              outTable = os.path.join(scratchgdb, "zonal_tree_"+field+"_"+str(zone_num))
-                              ie = field+"_"+str(zone_num)
-                              z_table = ZonalStatisticsAsTable(fuel_fc, "JOIN", ie, outTable, "NODATA", "MEAN")
-                              arcpy.AddField_management(outTable, field, "FLOAT")
-                              arcpy.CalculateField_management(outTable, field, "[MEAN]")
-                              one_to_one_join(fuel_fc, outTable, field, "FLOAT")
-
-                              # classify tiles into healthy and scenescent
-                              field_lst = createClassMembership(stage, landcover, field, field_lst, fuel_fc)
-
-                            #classify all
-                            ##%#$#&^
-                            field = "S2"
-                            arcpy.AddField_management(fuel_fc, "S2", "TEXT")
-
-                            createClassMembership(stage, "", field, field_lst, fuel_fc)
-                            features.extend([fuel_fc])
-
+                    arcpy.AddField_management(fuel_fc, "fuel", "INTEGER")
+                    if lc.stage != "tree":
+                      arcpy.AddField_management(fuel_fc, "_S2", "TEXT")
+                      arcpy.CalculateField_management(fuel_fc, "_S2", lc.stage)
+                      arcpy.CalculateField_management(fuel_fc, "fuel", int(lc.fuel_model))
+                    else:
+                      arcpy.CalculateField_management(fuel_fc, "fuel", "label(!_S2!)", "PYTHON_9.3",  "def label(x):\\n  if x == \"senescent_tree\":\\n    return int(13)\\n  elif x == \"healthy_tree\":\\n    return int(\""+lc.fuel_model+"\")")
+                  
+                    #Delete extra fields
+                    # fields = [f.name for f in arcpy.ListFields(fuel_fc)]
+                    # delete_fields = []
+                    # for field in fields:
+                    #   if field not in ["OBJECTID", "Shape", "Shape_Area", "Shape_Length", "ID", "_S2", "fuel"]:
+                    #     delete_fields.append(field)
+                    # arcpy.DeleteField_management(fuel_fc, delete_fields)
 
             text = "Creating contiguous land cover."
             generateMessage(text)
@@ -1287,18 +1226,24 @@ def gen_lc():
               rows.updateRow(row)
               i+= 1
 
-
             outTable = os.path.join(scratchgdb, "zonal_height")
             z_stat = ZonalStatisticsAsTable(landscape_fc, "JOIN", heights_zone, outTable, "NODATA", "MAXIMUM")
             arcpy.AddField_management(outTable, "height", "FLOAT")
             arcpy.CalculateField_management(outTable, "height", "[MAX]")
+
+            arcpy.CalculateField_management(outTable, "height", "[MAX]")
             one_to_one_join(landscape_fc, outTable, "height", "FLOAT")
 
+            arcpy.AddField_management(landscape_fc, "stand", "INTEGER")
+            arcpy.CalculateField_management(landscape_fc, "stand", "label(!fuel!,!height!)", "PYTHON_9.3", "def label(x, y):\\n  if x == 10 or x == 2:\\n    return int(y)\\n  return 0")
 
-          # Variables
 
+            estimate_time(zone_num)
+
+        #empty_scratchgdb()
       if classify_landscape == "Yes":
         classify_objects()
+
       # iterate through next zone if possible
       landscape_analysis.append(landscape_fc)
       zones = searchcursor.next()
@@ -1306,119 +1251,113 @@ def gen_lc():
   def merge_tiles():
     if len(landscape_analysis) > 0:
       text = "Creating contiguous land cover for entire analysis area (joining tiles)."
-      generateMessage(text)
+      newProcess(text)
 
       arcpy.Merge_management(landscape_analysis, classified_landscape)
       tree_cover = os.path.join(scratchgdb, "tree_cover")
-      canopycover = os.path.join(scratchgdb, "canopycover")
-
-      where_clause = "S2 = 'healthy_tree' OR S2 = 'senescent_tree'"
+      
+      where_clause = "_S2 = 'healthy_tree' OR _S2 = 'senescent_tree'"
       arcpy.Select_analysis(classified_landscape, tree_cover, where_clause)
       arcpy.Dissolve_management(tree_cover, canopycover)
+      text = "Fuel complex created."
+      generateMessage(text)
+
+
       #-----------------------------------------------
       #-----------------------------------------------
   if merge_landcover_tiles == "Yes":
     merge_tiles()
+
+  def convertToAscii():
+
+    arcpy.env.snapRaster = naip
+
+    fuel_lst = ["fuel", "canopy", "stand"]
+    elevation_lst = ["slope", "elevation", "aspect"]
+    landscape_elements = fuel_lst + elevation_lst
+    ascii_layers = []
+    
+    for layer in landscape_elements:
+
+      # Variables
+      ascii_output = os.path.join(outputs, layer + ".asc")
+      where_clause = layer +" <> 9999"
+      temp = os.path.join(scratchws, "t_"+layer+".shp")
+      temp_raster = os.path.join(scratchws, "t_"+layer+"_r.tif")
+      final = os.path.join(scratchws, layer+".tif")
+
+      text = "Generating "+layer+" ascii layer."
+      generateMessage(text)  # Variables
+
+      # Selecting layer and converting to raster
+      if layer in fuel_lst:
+        if layer == "canopy":
+          text = "Calculating Canopy Cover (%)."
+          generateMessage(text)
+          # Create FP.lasd
+          FP_lasd = os.path.join(scratchws, "FP.lasd")
+          arcpy.MakeLasDatasetLayer_management(lasd,FP_lasd,[0,1,3,4,5,6,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31],"","","","","")
+
+          #
+          # Create LP.lasd
+          LP_lasd = os.path.join(scratchws, "LP.lasd")
+          arcpy.MakeLasDatasetLayer_management(lasd,LP_lasd,[1,2,8,10,21,22],"","","","","")
+          #
+          # Create FP_count.tif
+          FP_count_tif = os.path.join(scratchws,"FP_count.tif")
+          arcpy.LasPointStatsAsRaster_management(FP_lasd, FP_count_tif,"POINT_COUNT","CELLSIZE", coarsening_size)
+          FP_count = Con(IsNull(FP_count_tif),0,FP_count_tif)
+          #
+          # Create All_pt_count.tif
+          All_pt_count_tif = os.path.join(scratchws,"All_pt_count.tif")
+          arcpy.LasPointStatsAsRaster_management(lasd, All_pt_count_tif,"POINT_COUNT","CELLSIZE",coarsening_size)
+          All_pt_count = All_pt_count_tif
+          #
+          # Calculate Canopy Cover (FP/LP Ratio)
+          temp = os.path.join(scratchws, "temp.tif")
+          canopy_cover = Divide(Float(FP_count), Float(All_pt_count))
+          canopy_cover = Int(Float(canopy_cover)*100)
+          canopy_cover = Con(canopy_cover==100,99,canopy_cover)
+          this = ExtractByMask(canopy_cover, canopycover)
+          this = Con(IsNull(this), 0, this)
+          this.save(temp)
+          arcpy.ProjectRaster_management(temp, canopy_cover_tif, projection, "BILINEAR", "5")
+          arcpy.CopyRaster_management(canopy_cover_tif, final, "", "", "0", "NONE", "NONE", "32_BIT_SIGNED","NONE", "NONE", "TIFF", "NONE")
+        else:
+          arcpy.Select_analysis(classified_landscape, temp, where_clause)
+          arcpy.PolygonToRaster_conversion(temp, layer, final, "CELL_CENTER", "", int(coarsening_size))
+      elif layer in elevation_lst:
+
+        # Calculating elevation derived layers
+        if layer == "slope":
+          arcpy.Slope_3d(dem, temp_raster, "DEGREE")
+        elif layer == "aspect":
+          arcpy.Aspect_3d(dem, temp_raster)
+        elif layer == "elevation":
+          temp_raster = dem
+
+        # Preparing raster for LCP specifications
+        arcpy.CopyRaster_management(temp_raster, final, "", "", "0", "NONE", "NONE", "32_BIT_SIGNED","NONE", "NONE", "TIFF", "NONE")
+
+      arcpy.DefineProjection_management(final, projection)
+
+      # Extracting layer by analysis area
+      #ready = ExtractByMask(final, classified_landscape)
+      ready = ExtractByMask(final, naip)
+      ready.save(temp_raster)
+
+      # Converting to ascii format and adding to list for LCP tool
+      arcpy.RasterToASCII_conversion(ready, ascii_output)
+      ascii_layers.append(ascii_output)
+
+  # Coding note: Check to see that lists are concatenated
+  if generate_ascii == "Yes":
+    convertToAscii()
+
 if generate_land_cover == "Yes":
   gen_lc()
 #-----------------------------------------------
 #-----------------------------------------------
-def fuels():
-
-  model = "13"  # Fuel Model set
-
-  text = "Assigning fuel models."
-  newProcess(text)
-
-  # Variables
-  land_cover_fields = [["fuel", "S2"], ["stand", "height"]]
-
-  # ------------------------------------------------------------------------------
-  # Canopy Cover
-  # ------------------------------------------------------------------------------
-  text = "Calculating Canopy Cover (%)."
-  generateMessage(text)
-  # Create FP.lasd
-  FP_lasd = os.path.join(scratchws, "FP.lasd")
-  arcpy.MakeLasDatasetLayer_management(lasd,FP_lasd,[0,1,3,4,5,6,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31],"","","","","")
-
-  #
-  # Create LP.lasd
-  LP_lasd = os.path.join(scratchws, "LP.lasd")
-  arcpy.MakeLasDatasetLayer_management(lasd,LP_lasd,[1,2,8,10,21,22],"","","","","")
-  #
-  # Create FP_count.tif
-  FP_count_tif = os.path.join(scratchws,"FP_count.tif")
-  arcpy.LasPointStatsAsRaster_management(FP_lasd,FP_count_tif,"POINT_COUNT","CELLSIZE",16.4042)
-  FP_count = Con(IsNull(FP_count_tif),0,FP_count_tif)
-  #
-  # Create All_pt_count.tif
-  All_pt_count_tif = os.path.join(scratchws,"All_pt_count.tif")
-  arcpy.LasPointStatsAsRaster_management(lasd,All_pt_count_tif,"POINT_COUNT","CELLSIZE",16.4042)
-  All_pt_count = All_pt_count_tif
-  #
-  # Calculate Canopy Cover (FP/LP Ratio)
-  temp = os.path.join(scratchws, "temp.tif")
-  canopy_cover = Divide(Float(FP_count), Float(All_pt_count))
-  canopy_cover = Int(Float(canopy_cover)*100)
-  canopy_cover = Con(canopy_cover==100,99,canopy_cover)
-  this = ExtractByMask(canopy_cover, canopycover)
-  this = Con(IsNull(this), 0, this)
-  this.save(temp)
-  arcpy.ProjectRaster_management(temp, canopy_cover_tif, projection, "BILINEAR", "5")
-
-  def classify(model, x):
-
-    # Anderson 13 fuel models
-    if model == "13":
-      healthy_tree = "10"
-      senescent_tree = "13"
-      shrub = "6"
-      grass = "1"
-      nonburnable = "99"
-    elif model != "13":
-      #-----------------------------------------------
-      #-----------------------------------------------
-      text = "Cannot classify fuels. Only Anderson 13 are available."
-      generateMessage(text)
-      #-----------------------------------------------
-      classify("13", output_field)
-    if x == "fuel":
-      return ("def classify(x):\\n"+
-              "  if x == \"nonburnable\":\\n"+
-              "    return "+nonburnable+"\\n"+
-              "  elif x == \"grass\":\\n"+
-              "    return "+grass+"\\n"+
-              "  elif x == \"shrub\":\\n"+
-              "    return "+shrub+"\\n"+
-              "  elif x == \"healthy_tree\":\\n"+
-              "    return "+healthy_tree+"\\n"
-              "  elif x == \"senescent_tree\":\\n"+
-              "    return "+senescent_tree+"\\n"
-              )
-    # Returns height attribute - May delete if cannot include into .LCP
-    elif x == "stand":
-      return("def classify(x):\\n"+
-             "  return x"
-             )
-
-  for field in land_cover_fields:
-    input_field = field[1]
-    output_field = field[0]
-    arcpy.AddField_management(classified_landscape, output_field, "INTEGER")
-    fxn = "classify(!"+input_field+"!)"
-    label_class = classify(model, output_field)
-    arcpy.CalculateField_management(classified_landscape, output_field, fxn, "PYTHON_9.3", label_class)
-
-  #-----------------------------------------------
-  #-----------------------------------------------
-
-  #-----------------------------------------------
-  #-----------------------------------------------
-  text = "Fuel complex created."
-  generateMessage(text)
-if classify_fuels == "Yes":
-  fuels()
 
 #-----------------------------------------------
 #-----------------------------------------------
@@ -1430,7 +1369,6 @@ def measure_fire_behavior():
   join_burns = "Yes"
 
   # behvaior metrics ={flame length, rate of spread, fire intenstiy}
-  burn_metrics = ["fml", "ros", "fi"]
 
   processes = [
   [create_LCP,"Create LCP"],
@@ -1440,8 +1378,8 @@ def measure_fire_behavior():
     if process:
       arcpy.AddMessage(process[1])
 
-#-----------------------------------------------
-#-----------------------------------------------
+  #-----------------------------------------------
+  #-----------------------------------------------
   def LCP():
     text = "Creating Landscape File."
     newProcess(text)
@@ -1452,6 +1390,7 @@ def measure_fire_behavior():
     ascii_layers = []
     fuel = os.path.join(outputs, "fuel.asc")
     arcpy.env.workspace = scratchws
+
 
     def convertToAscii(x, landscape_elements):
 
@@ -1467,6 +1406,36 @@ def measure_fire_behavior():
         # Selecting layer and converting to raster
         if layer in fuel_lst:
           if layer == "canopy":
+            text = "Calculating Canopy Cover (%)."
+            generateMessage(text)
+            # Create FP.lasd
+            FP_lasd = os.path.join(scratchws, "FP.lasd")
+            arcpy.MakeLasDatasetLayer_management(lasd,FP_lasd,[0,1,3,4,5,6,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31],"","","","","")
+
+            #
+            # Create LP.lasd
+            LP_lasd = os.path.join(scratchws, "LP.lasd")
+            arcpy.MakeLasDatasetLayer_management(lasd,LP_lasd,[1,2,8,10,21,22],"","","","","")
+            #
+            # Create FP_count.tif
+            FP_count_tif = os.path.join(scratchws,"FP_count.tif")
+            arcpy.LasPointStatsAsRaster_management(FP_lasd,FP_count_tif,"POINT_COUNT","CELLSIZE",16.4042)
+            FP_count = Con(IsNull(FP_count_tif),0,FP_count_tif)
+            #
+            # Create All_pt_count.tif
+            All_pt_count_tif = os.path.join(scratchws,"All_pt_count.tif")
+            arcpy.LasPointStatsAsRaster_management(lasd,All_pt_count_tif,"POINT_COUNT","CELLSIZE",16.4042)
+            All_pt_count = All_pt_count_tif
+            #
+            # Calculate Canopy Cover (FP/LP Ratio)
+            temp = os.path.join(scratchws, "temp.tif")
+            canopy_cover = Divide(Float(FP_count), Float(All_pt_count))
+            canopy_cover = Int(Float(canopy_cover)*100)
+            canopy_cover = Con(canopy_cover==100,99,canopy_cover)
+            this = ExtractByMask(canopy_cover, canopycover)
+            this = Con(IsNull(this), 0, this)
+            this.save(temp)
+            arcpy.ProjectRaster_management(temp, canopy_cover_tif, projection, "BILINEAR", "5")
             arcpy.CopyRaster_management(canopy_cover_tif, final, "", "", "0", "NONE", "NONE", "32_BIT_SIGNED","NONE", "NONE", "TIFF", "NONE")
           else:
             arcpy.Select_analysis(classified_landscape, temp, where_clause)
@@ -1505,81 +1474,81 @@ def measure_fire_behavior():
     #-----------------------------------------------
     #-----------------------------------------------
 
-    #-----------------------------------------------
-    #-----------------------------------------------
-    text = "Creating LCP file."
-    generateMessage(text)
+  #   #-----------------------------------------------
+  #   #-----------------------------------------------
+  #   text = "Creating LCP file."
+  #   generateMessage(text)
 
-    import ctypes
-    ##
-    ### Variables
-    landscape_file = os.path.join(outputs, "landscape.lcp")
-    genlcp = os.path.join(dll_path, "GenLCPv2.dll")
-    Res = landscape_file
-    Elev = os.path.join(outputs,"elevation.asc")
-    Slope = os.path.join(outputs,"slope.asc")
-    Aspect = os.path.join(outputs,"aspect.asc")
-    Fuel = os.path.join(outputs,"fuel.asc")
-    Canopy = os.path.join(outputs,"canopy.asc")
+  #   import ctypes
+  #   ##
+  #   ### Variables
+  #   landscape_file = os.path.join(outputs, "landscape.lcp")
+  #   genlcp = os.path.join(dll_path, "GenLCPv2.dll")
+  #   Res = landscape_file
+  #   Elev = os.path.join(outputs,"elevation.asc")
+  #   Slope = os.path.join(outputs,"slope.asc")
+  #   Aspect = os.path.join(outputs,"aspect.asc")
+  #   Fuel = os.path.join(outputs,"fuel.asc")
+  #   Canopy = os.path.join(outputs,"canopy.asc")
 
-    # Create LCP
-    dll = ctypes.cdll.LoadLibrary(genlcp)
-    fm = getattr(dll, "?Gen@@YAHPBD000000@Z")
-    fm.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p]
-    fm.restype = ctypes.c_int
+  #   # Create LCP
+  #   dll = ctypes.cdll.LoadLibrary(genlcp)
+  #   fm = getattr(dll, "?Gen@@YAHPBD000000@Z")
+  #   fm.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p]
+  #   fm.restype = ctypes.c_int
 
-    e = fm(Res, Elev, Slope, Aspect, Fuel, Canopy, "")
-    if e > 0:
-      arcpy.AddError("Error {0}".format(e))
-  if create_LCP == "Yes":
-    LCP()
-  #-----------------------------------------------
-  #-----------------------------------------------
+  #   e = fm(Res, Elev, Slope, Aspect, Fuel, Canopy, "")
+  #   if e > 0:
+  #     arcpy.AddError("Error {0}".format(e))
+  # if create_LCP == "Yes":
+  #   LCP()
+  # #-----------------------------------------------
+  # #-----------------------------------------------
 
-  #-----------------------------------------------
-  #-----------------------------------------------
-  def burn():
-    text = "Running FlamMap."
-    newProcess(text)
+  # #-----------------------------------------------
+  # #-----------------------------------------------
+  # def burn():
+  #   text = "Running FlamMap."
+  #   newProcess(text)
 
-    # Burn in FlamMap
-    #
-    flamMap = os.path.join(dll_path, "FlamMapF.dll")
-    dll = ctypes.cdll.LoadLibrary(flamMap)
-    fm = getattr(dll, "?Run@@YAHPBD000NN000HHN@Z")
-    fm.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_double, ctypes.c_double, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_int, ctypes.c_int, ctypes.c_double]
-    fm.restype = ctypes.c_int
+  #   # Burn in FlamMap
+  #   #
+  #   flamMap = os.path.join(dll_path, "FlamMapF.dll")
+  #   dll = ctypes.cdll.LoadLibrary(flamMap)
+  #   fm = getattr(dll, "?Run@@YAHPBD000NN000HHN@Z")
+  #   fm.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_double, ctypes.c_double, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_int, ctypes.c_int, ctypes.c_double]
+  #   fm.restype = ctypes.c_int
 
-    Landscape = landscape_file
-    FuelMoist = fuel_moisture
-    OutputFile = os.path.join(outputs, "Burn")
-    FuelModel = "-1"
-    Windspeed = 30.0  # mph
-    WindDir = 0.0   # Direction angle in degrees
-    Weather = "-1"
-    WindFileName = "-1"
-    DateFileName = "-1"
-    FoliarMoist = 100 # 50%
-    CalcMeth = 0    # 0 = Finney 1998, 1 = Scott & Reinhardt 2001
-    Res = -1.0
+  #   Landscape = landscape_file
+  #   FuelMoist = fuel_moisture
+  #   OutputFile = os.path.join(outputs, "Burn")
+  #   FuelModel = "-1"
+  #   Windspeed = 30.0  # mph
+  #   WindDir = 0.0   # Direction angle in degrees
+  #   Weather = "-1"
+  #   WindFileName = "-1"
+  #   DateFileName = "-1"
+  #   FoliarMoist = 100 # 50%
+  #   CalcMeth = 0    # 0 = Finney 1998, 1 = Scott & Reinhardt 2001
+  #   Res = -1.0
 
-    e = fm(Landscape, FuelMoist, OutputFile, FuelModel, Windspeed, WindDir, Weather, WindFileName, DateFileName, FoliarMoist, CalcMeth, Res)
-    if e > 0:
-      arcpy.AddError("Problem with parameter {0}".format(e))
-
-
-    for root, dirs, fm_outputs in os.walk(outputs): #Check to confirm outputs are saved here
-       for burn in fm_outputs:
-          if burn[-3:].lower() in burn_metrics:
-              metric = burn[-3:].lower()
-              burn_ascii = os.path.join(outputs, metric+".asc")
-              os.rename(os.path.join(outputs, burn), burn_ascii)
+  #   e = fm(Landscape, FuelMoist, OutputFile, FuelModel, Windspeed, WindDir, Weather, WindFileName, DateFileName, FoliarMoist, CalcMeth, Res)
+  #   if e > 0:
+  #     arcpy.AddError("Problem with parameter {0}".format(e))
 
 
-    text = "Burn complete."
-    generateMessage(text)
-  if run_FlamMap == "Yes":
-    burn()
+  #   for root, dirs, fm_outputs in os.walk(outputs): #Check to confirm outputs are saved here
+  #      for burn in fm_outputs:
+  #         if burn[-3:].lower() in burn_metrics:
+  #             metric = burn[-3:].lower()
+  #             burn_ascii = os.path.join(outputs, metric+".asc")
+  #             os.rename(os.path.join(outputs, burn), burn_ascii)
+
+
+  #   text = "Burn complete."
+  #   generateMessage(text)
+  # if run_FlamMap == "Yes":
+  #   burn()
 
   #-----------------------------------------------
   #-----------------------------------------------
@@ -1650,10 +1619,10 @@ def measure_fire_behavior():
     burn_obia()
 
   # Clip pipeline by burn similarities
-  if pipe_analysis == "Yes":
+  #if pipe_analysis == "Yes":
     #arcpy.Select_analysis(classified_landscape, )
 
-if fire_behavior = "Yes":
+if fire_behavior == "Yes":
   measure_fire_behavior()
   
 #-----------------------------------------------
