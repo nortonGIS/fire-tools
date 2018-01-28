@@ -1,8 +1,8 @@
 #--------------------------------------------------------------------------------------------------------------------------------------
-# Name:        genHiResBurn Tool
+# Name:        fuelSpotter Tool
 # Author:      Peter Norton
 # Created:     05/25/2017
-# Updated:     12/16/2017
+# Updated:     01/27/2018
 # Copyright:   (c) Peter Norton and Matt Ashenfarb 2017
 #--------------------------------------------------------------------------------------------------------------------------------------
 #--------------------------------------------------------------------------------------------------------------------------------------
@@ -22,8 +22,8 @@ summary = ""
 #          "(4) Populate an MXD with all necessary shapefiles.\\n"
 
 projection = "UTMZ10"  #["UTMZ10", "UTMZ11"]
-lidar_date = 2013
-naip_date = 2014
+lidar_date = 2008
+naip_date = 2009
 burn_metrics = ["fml", "ros", "fi", "fli"]
 
 # Settings
@@ -50,8 +50,6 @@ input_weather = ""
 #-----------------------------------------------
 #-----------------------------------------------
 
-pull_imagery = "No"
-process_lidar = "No" # Process LiDAR data
 align_inputs = "No" # "Align and Scale inputs"
 pipe_analysis = "No"  # "Reduce Analysis to Infrastructure Buffer"
 generate_land_cover = "Yes"  # "Generate Land Cover & SVM"
@@ -193,7 +191,7 @@ arcpy.env.overwriteOutput = True
 #-----------------------------------------------
 # Set Global Variables
 # Raw inputs
-raw_naip = os.path.join(inputs, input_naip) # NAIP Imagery at 1m res
+naip_1m = os.path.join(inputs, input_naip) # NAIP Imagery at 1m res
 lasd = os.path.join(inputs, input_las)
 pipeline = os.path.join(inputs, input_pipeline) # Pipeline
 fuel_moisture = os.path.join(inputs, input_fuel_moisture) # Fuel Moisture
@@ -210,9 +208,9 @@ weather = os.path.join(inputs, input_weather) # Weather
 bnd_zones = os.path.join(inputs, input_bnd) # Bounding box for each tile
 
 # Outputs
+naip_5m = os.path.join(outputs,"naip_5m.tif")
 S1_classified = os.path.join(outputs, "S1_classified.shp")
 classified_landscape = os.path.join(outputs, "classified.shp")
-canopy_5m = ""
 
 b1 = os.path.join(scratchgdb, "Band_1")
 b2 = os.path.join(scratchgdb, "Band_2")
@@ -328,7 +326,7 @@ def estimate_time(zone_num):
 
 def find_stems(fuel, fm):
 
-  raw_heights = os.path.join(outputs,"heights_"+str(zone_num)+".tif")
+  heights_1m = os.path.join(outputs,"heights_1m_"+str(zone_num)+".tif")
   trees_zone = os.path.join(scratchgdb, "trees_"+str(zone_num))
   tree_bnd = os.path.join(scratchws, "trees_"+str(zone_num)+".shp")
   existing_canopy_centroids = os.path.join(scratchws, "canopy_cntrs_"+str(zone_num)+".shp")
@@ -345,7 +343,7 @@ def find_stems(fuel, fm):
   global zone_num
 
   # Parameters
-  this = SetNull(fuel, raw_heights, "Value < "+str(fm))
+  this = SetNull(fuel, heights_1m, "Value < "+str(fm))
   this.save(zone_heights)
   this = Raster(zone_heights)
   max_canopy_height = Int(this.maximum)
@@ -466,30 +464,25 @@ def align():
   #-----------------------------------------------
   text = "Aligning cells."
   newProcess(text)
-  # Resample NAIP Imagery, heights, and DEM to
-  # align cells and scale measurements to
-  # projection. Resampled layers will be saved to
-  # 'Outputs' folder
+  # Resample NAIP Imagery, heights, and DEM to align cells and scale measurements to projection. Resampled layers will be saved to 'Outputs' folder
 
   #NAIP
   text = "Resampling NAIP image."
   generateMessage(text)
 
-  naip = os.path.join(outputs,"naip_"+coarsening_size+"m.tif")
   bnd_zones_rast = os.path.join(scratchgdb, "bnd_zones_rast")
   cell_size = int(coarsening_size)
   naip_cell_size = str(cell_size) +" "+str(cell_size)
-  #arcpy.Resample_management(raw_naip, naip, naip_cell_size, "BILINEAR") # Bilinear Interpolation reduce image distortion when scaling.It linearly interpolates the nearest 4 pixels
-  #arcpy.DefineProjection_management(naip, projection)
+  arcpy.Resample_management(naip_1m, naip_5m, naip_cell_size, "BILINEAR") # Bilinear Interpolation reduce image distortion when scaling.It linearly interpolates the nearest 4 pixels
+  #arcpy.DefineProjection_management(naip_5m, projection)
   bands = ["Band_1","Band_2","Band_3","Band_4"] # NAIP has 4 bands (in increasing order) B,G,R,NIR
 
-  arcpy.env.snapRaster = naip
-
+  arcpy.env.snapRaster = naip_1m
   # Create a fitted, resampled boundary
   text = "Creating a boundary based on resampled NAIP imagery extent."
   generateMessage(text)
 
-  this = Int(Raster(naip)*0)
+  this = Int(Raster(naip_1m)*0)
   this.save(bnd_zones_rast)
   arcpy.DefineProjection_management(bnd_zones_rast, projection)
   arcpy.RasterToPolygon_conversion(bnd_zones_rast, bnd_zones, "NO_SIMPLIFY", "Value")
@@ -502,14 +495,14 @@ def align():
 
   fishnet = os.path.join(scratchws, "fishnet.shp")
 
-  desc = arcpy.Describe(naip)
+  desc = arcpy.Describe(naip_1m)
   origin_coord = str(desc.extent.XMin)+ " " +str(desc.extent.YMin)
   y_axis_coord = str(desc.extent.XMin)+ " " +str(desc.extent.YMax)
 
   cell_width = 1000
   cell_height = 1000
 
-  arcpy.CreateFishnet_management(fishnet, origin_coord, y_axis_coord, cell_width, cell_height, "", "", "", "NO_LABELS", naip, "POLYGON")
+  arcpy.CreateFishnet_management(fishnet, origin_coord, y_axis_coord, cell_width, cell_height, "", "", "", "NO_LABELS", naip_1m, "POLYGON")
   arcpy.Clip_analysis(fishnet, bnd_zones, analysis_area)
   arcpy.DefineProjection_management(analysis_area, projection)
 
@@ -600,14 +593,15 @@ if align_inputs == "Yes":
 
 #-----------------------------------------------
 #-----------------------------------------------
+arcpy.env.extent = naip_1m
 
 def gen_lc():
 
-  create_obia = "No"
+  create_obia = "Yes"
 
   process_lidar = "No"
-  classify_S1 = "No"
-  classify_S2 = "No"
+  classify_S1 = "Yes"
+  classify_S2 = "Yes"
   find_canopies = "No"
   merge_landcover_tiles = "Yes"
 
@@ -637,25 +631,21 @@ def gen_lc():
   while zones:
     global zone_num
     zone_num = zones.getValue("FID")
-    if zone_num >1:  #No 31,32
+    if zone_num < -1:  #skip if needed
       #If tile is created already, skip to next in queue
       zones = searchcursor.next()
 
     else:
-
-      sms_fc = os.path.join(scratchgdb, "sms_fc_"+str(zone_num))
-      landscape_fc = os.path.join(scratchws, "landscape_fc_"+str(zone_num)+".shp")
 
       def obia():
         text = "Running an OBIA for zone "+str(zone_num+1)+" of "+str(tot_num_tiles)+"."
         newProcess(text)
 
         #Variables
-        sms_fc = os.path.join(scratchgdb, "sms_fc_"+str(zone_num))
         bnd = os.path.join(scratchws, "zone_"+str(zone_num)+".shp")
         bnd_rast = os.path.join(scratchws, "bnd.tif")
-        naip_zone = os.path.join(scratchws, "naip_zone_"+str(zone_num)+".tif")
-        naip_zone_1m = os.path.join(scratchws, "naip_z_1m_"+str(zone_num)+".tif")
+        naip_zone_5m = os.path.join(scratchws, "naip_5m_"+str(zone_num)+".tif")
+        naip_zone_1m = os.path.join(scratchws, "naip_1m_"+str(zone_num)+".tif")
         naip_zone_b1 = os.path.join(naip_zone_1m, "Band_1")
         naip_zone_b2 = os.path.join(naip_zone_1m, "Band_2")
         naip_zone_b3 = os.path.join(naip_zone_1m, "Band_3")
@@ -664,9 +654,8 @@ def gen_lc():
         heights_zone = os.path.join(outputs, "stand_"+str(zone_num)+".tif")
         dem_zone = os.path.join(outputs, "dem_"+str(zone_num)+".tif")
 
-        naip_sms = os.path.join(scratchgdb, "naip_sms_"+str(zone_num))
-
         # Create zone boundary and extract NAIP and heights
+        arcpy.env.extent = analysis_area
         where_clause = "FID = " + str(zone_num)
         arcpy.Select_analysis(analysis_area, bnd, where_clause)
 
@@ -677,129 +666,185 @@ def gen_lc():
         for row in cursor:
           zone_area = row.getValue("Shape_area")
 
-        this = ExtractByMask(naip, bnd)
-        this.save(naip_zone)
+        arcpy.env.extent = bnd
+        arcpy.env.snapRaster = naip_5m
+        this = ExtractByMask(naip_5m, bnd)
+        this.save(naip_zone_5m)
 
-        this = ExtractByMask(raw_naip, bnd)
+        arcpy.env.snapRaster = naip_1m
+        this = ExtractByMask(naip_1m, bnd)
         this.save(naip_zone_1m)
 
         def lasToHeights():
 
-          # Create DEM
-          text = "Extract LAS and creating heights."
-          generateMessage(text)
-
           # -------------Create DEM, DSM, Heights, Canopy Cover--------------------
           #
-          naip_zone = os.path.join(scratchws, "naip_zone_"+str(zone_num)+".tif")
+          naip_zone_1m = os.path.join(scratchws, "naip_1m_"+str(zone_num)+".tif")
           lasd_zone = os.path.join(outputs, "pointcloud_"+str(zone_num)+".lasd")
           las_dem = os.path.join(scratchws, "las_dem_"+str(zone_num)+".tif")
           las_dsm = os.path.join(scratchws, "las_dsm_"+str(zone_num)+".tif")
-          raw_heights = os.path.join(outputs, input_heights) # Heights
-          raw_dem = os.path.join(outputs, "dem_"+str(zone_num)+".tif")
-          raw_dsm = os.path.join(outputs, "dsm_"+str(zone_num)+".tif")
+          heights_1m = os.path.join(outputs, input_heights) # Heights
+          dem_1m = os.path.join(outputs, "dem_1m_"+str(zone_num)+".tif")
+          dsm_1m = os.path.join(outputs, "dsm_1m_"+str(zone_num)+".tif")
           temp = os.path.join(scratchws, "temp.tif")
 
-          arcpy.env.snapRaster = naip_zone
+          arcpy.env.snapRaster = naip_1m
           cell_size = int(int(coarsening_size)*scale_naip)
           
           #check if NAIP and LAS are in same projection
           las_scale = 1
           las_cell_size = 1
+          naip_lidar_prj = projection
           if projection != lidar_projection:
             naip_zone_LAS_proj = os.path.join(scratchws, "prj_n_"+str(zone_num))
             las_scale = 0.3048
             las_cell_size = 3.28084
-
-            arcpy.ProjectRaster_management(naip_zone, naip_zone_LAS_proj, lidar_projection, "BILINEAR")
-            naip_zone = naip_zone_LAS_proj
+            
+            arcpy.ProjectRaster_management(naip_zone_1m, naip_zone_LAS_proj, lidar_projection, "BILINEAR")
+            naip_lidar_prj = naip_zone_LAS_proj
+            arcpy.env.extent = naip_lidar_prj
 
           #Extract LAS by NAIP zone bnd
-          arcpy.ddd.ExtractLas(lasd, outputs, naip_zone, rearrange_points='MAINTAIN_POINTS', compute_stats='NO_COMPUTE_STATS', out_las_dataset = lasd_zone)
+          arcpy.ddd.ExtractLas(lasd, outputs, naip_lidar_prj, rearrange_points='MAINTAIN_POINTS', compute_stats='NO_COMPUTE_STATS', out_las_dataset = lasd_zone)
           
           #
           # Create DEM
+          text = "Creating Elevation."
+          generateMessage(text)
+
+          arcpy.env.snapRaster = naip_lidar_prj
           LP_zone = os.path.join(scratchws, "LP_"+str(zone_num)+".lasd")
           arcpy.MakeLasDatasetLayer_management(lasd_zone,LP_zone,"","Last Return","","","","")
           arcpy.LasDatasetToRaster_conversion(LP_zone, las_dem, "ELEVATION", "BINNING MINIMUM LINEAR", "FLOAT", "CELLSIZE", las_cell_size, las_scale)
           arcpy.DefineProjection_management(las_dem, lidar_projection)
-          arcpy.ProjectRaster_management(las_dem, raw_dem, projection, "BILINEAR")
+
+          arcpy.env.extent = bnd
+          arcpy.env.snapRaster = naip_1m
+          arcpy.ProjectRaster_management(las_dem, temp, projection, "BILINEAR")
           
-          this = Aggregate(raw_dem, coarsening_size, "MEDIAN")
+          #arcpy.env.snapRaster = naip_5m
+          this = ExtractByMask(temp, bnd)
+          this.save(dem_1m)
+          
+          arcpy.env.snapRaster = naip_5m
+          this = Aggregate(dem_1m, coarsening_size, "MEDIAN")
           this.save(dem_zone)
 
           # Create Slope
+          text = "Creating Slope."
+          generateMessage(text)
+          
+          arcpy.env.snapRaster = naip_1m
           slope_1m = os.path.join(scratchgdb, "slope_1m_"+str(zone_num))
           slope_zone = os.path.join(outputs, "slope_"+str(zone_num)+".tif")
-          arcpy.Slope_3d(raw_dem, slope_1m, "DEGREE")
-          this = Con(slope_1m, 0, slope_1m, IsNull(slope_1m))
+          arcpy.Slope_3d(dem_1m, slope_1m, "DEGREE")
+
+          arcpy.env.snapRaster = naip_5m
+          this = Con(IsNull(slope_1m), 0, slope_1m)
           this = Aggregate(this, coarsening_size, "MEDIAN")
           this.save(slope_zone)
 
           # Create Aspect
+          text = "Creating Aspect."
+          generateMessage(text)
 
+          arcpy.env.snapRaster = naip_1m
           aspect_1m = os.path.join(scratchgdb, "aspect_1m_"+str(zone_num))
-          aspect_zone = os.path.join(scratchws, "aspect_"+str(zone_num)+".tif")
-          arcpy.Aspect_3d(raw_dem, aspect_1m, "DEGREE")
-          this = Con(aspect_1m, 0, ascpet_1m, IsNull(aspect_1m))
+          aspect_zone = os.path.join(outputs, "aspect_"+str(zone_num)+".tif")
+          arcpy.Aspect_3d(dem_1m, aspect_1m)
+
+          arcpy.env.snapRaster = naip_5m
+          this = Con(IsNull(aspect_1m), 0, aspect_1m)
           this = Aggregate(this, coarsening_size, "MEDIAN")
           this.save(aspect_zone)
 
           # Create Canopy Cover
 
+          text = "Creating Canopy Cover."
+          generateMessage(text)
+
           All_count = os.path.join(scratchgdb, "All_count_"+str(zone_num))
           All_1m = os.path.join(scratchgdb, "All_1m_"+str(zone_num))
           All_5m = os.path.join(scratchgdb, "All_5m_"+str(zone_num))
 
-          arcpy.LasPointStatsAsRaster_management(Lasd_zone, All_count,"POINT_COUNT","CELLSIZE", las_cell_size)
+          arcpy.env.extent = naip_lidar_prj
+          arcpy.env.snapRaster = naip_lidar_prj
+          arcpy.LasPointStatsAsRaster_management(lasd_zone, All_count,"POINT_COUNT","CELLSIZE", las_cell_size)
           arcpy.DefineProjection_management(All_count, lidar_projection)
+
+          arcpy.env.extent = bnd
+          arcpy.env.snapRaster = naip_1m
           arcpy.ProjectRaster_management(All_count, All_1m, projection, "BILINEAR")
           this = Con(IsNull(All_1m),0,All_1m)
+
+          
+          arcpy.env.snapRaster = naip_5m
           this = Aggregate(this, coarsening_size, "MEDIAN")
           this.save(All_5m)
           
+          FP_zone = os.path.join(scratchws, "FP_"+str(zone_num)+".lasd")
           FP_count = os.path.join(scratchgdb, "FP_count_"+str(zone_num))
           FP_1m = os.path.join(scratchgdb, "FP_1m_"+str(zone_num))
           FP_5m = os.path.join(scratchgdb, "FP_5m_"+str(zone_num))
+
+          arcpy.env.extent = naip_lidar_prj
+          arcpy.env.snapRaster = naip_lidar_prj
           arcpy.MakeLasDatasetLayer_management(lasd_zone, FP_zone,"","First of Many","","","","")
           arcpy.LasPointStatsAsRaster_management(FP_zone, FP_count,"POINT_COUNT","CELLSIZE",las_cell_size)
           arcpy.DefineProjection_management(FP_count, lidar_projection)
-          arcpy.ProjectRaster_management(FP_count, FP, projection, "BILINEAR")
-          this = Con(IsNull(FP),0,FP)
+
+          arcpy.env.extent = bnd
+          arcpy.env.snapRaster = naip_1m
+          arcpy.ProjectRaster_management(FP_count, FP_1m, projection, "BILINEAR")
+          this = Con(IsNull(FP_1m),0,FP_1m,)
+          this = ExtractByMask(temp, bnd)
+
+          arcpy.env.snapRaster = naip_5m
           this = Aggregate(this, coarsening_size, "MEDIAN")
           this.save(FP_5m)
 
-          global canopy_5m
-          canopy_5m = os.path.join(canopy_cover, "cc_5m_"+str(zone_num)+".tif")
-          this = Int(Float(Divide(Float(FP_5m), Float(All_5m)))*100)
-          this = Con(this, 99, this, "Value == 100")
+          
+          canopy_5m = os.path.join(scratchws, "cc_5m_"+str(zone_num)+".tif")
+          this = Int(Float(Divide(Float(FP_5m) / Float(All_5m)))*100)
+          this = Con(this, 99, this, "Value = 100")
           this.save(canopy_5m)
 
           #
           # Create DSM
+
+          text = "Creating Heights."
+          generateMessage(text)
+
+          arcpy.env.extent = naip_lidar_prj
+          arcpy.env.snapRaster = naip_lidar_prj
           arcpy.LasDatasetToRaster_conversion(lasd_zone, las_dsm, "ELEVATION", "BINNING MAXIMUM NONE", "FLOAT", "CELLSIZE", las_cell_size, las_scale)
           arcpy.DefineProjection_management(las_dsm, lidar_projection)
           this_dsm = Con(IsNull(las_dsm),las_dem, las_dsm)
           this_dsm = FocalStatistics(this_dsm, NbrRectangle(2,2, "CELL"), "MAXIMUM", "DATA")
-          this_dsm.save(temp)
-          arcpy.ProjectRaster_management(temp, raw_dsm, projection, "BILINEAR")
+          dsm_smooth = os.path.join(scratchws, "dsm_smooth.tif")
+          this_dsm.save(dsm_smooth)
+
+          arcpy.env.extent = bnd
+          arcpy.env.snapRaster = naip_1m
+          arcpy.ProjectRaster_management(dsm_smooth, temp, projection, "BILINEAR")
+          this = ExtractByMask(temp, bnd)
+          this.save(dsm_1m)
 
 
           # Create Heights
           hts_interm1 = os.path.join(scratchws,"hts_interm1.tif")
           hts_interm2 = os.path.join(scratchws,"hts_interm2.tif")
           heights_sp = os.path.join(scratchws, "hts_sp.tif")
-          raw_heights = os.path.join(outputs,"heights_1m_"+str(zone_num)+".tif")
+          heights_1m = os.path.join(outputs,"heights_1m_"+str(zone_num)+".tif")
 
 
-          ht = Float(raw_dsm)-Float(raw_dem)
+          ht = Float(dsm_1m)-Float(dem_1m)
           ht = Con(IsNull(Float(ht)), 0, Float(ht))
           ht = Con(Float(ht) < 0, 0, Float(ht))
-          ht.save(raw_heights)
+          ht.save(heights_1m)
           
-          arcpy.env.snapRaster = naip_zone
-          
-          this = Aggregate(raw_heights, coarsening_size, "MEDIAN")
+          arcpy.env.snapRaster = naip_5m
+          this = Aggregate(heights_1m, coarsening_size, "MEDIAN")
           this.save(heights_zone)
 
           # Interpolate over error due to birds
@@ -865,7 +910,10 @@ def gen_lc():
           image_enhancements = ["ndvi", "ndwi", "gndvi", "osavi"]
 
           created_enhancements_1m = createImageEnhancements(image_enhancements)
-          
+
+          arcpy.env.extent = bnd
+          arcpy.env.snapRaster = naip_1m
+
           s1_ = []
           s1_1m = os.path.join(scratchws, "s1_1m.tif")
           s1_5m = os.path.join(scratchws, "s1_5m.tif")
@@ -903,7 +951,7 @@ def gen_lc():
 
           this.save(s1_1m)
 
-
+          arcpy.env.snapRaster = naip_5m
           this = Aggregate(this, coarsening_size, "MEDIAN")
           this.save(s1_5m)
 
@@ -920,14 +968,11 @@ def gen_lc():
           cm_heights = os.path.join(scratchgdb, "cm_heights")
 
           s1 = os.path.join(scratchws, "s1_1m.tif")
-          #s1 = os.path.join(scratchws, "s1_"+coarsening_size+"m.tif")
-
           s2_5m = os.path.join(outputs, "s2_5m.tif")
-          
           heights_zone = os.path.join(outputs, "heights_1m_"+str(zone_num)+".tif")
-          #heights_zone = os.path.join(outputs, "heights_"+coarsening_size+"m_"+str(zone_num)+".tif")
 
-
+          arcpy.env.extent = bnd
+          arcpy.env.snapRaster = naip_1m
 
           this = Int(Float(heights_zone)*100)
           this.save(cm_heights)
@@ -985,13 +1030,17 @@ def gen_lc():
     
           this = CellStatistics(fuel_lst, "SUM", "DATA")
           this.save(fuels_1m)
-
+          
+          arcpy.env.snapRaster = naip_5m
           this = Aggregate(this, coarsening_size, "MEDIAN")
           this.save(fuels_5m)
 
           # Canopy cover
-          #canopy_zone = os.path.join(outputs, "canopy_"+str(zone_num)+".tif")
-          #this = SetNull(fuels_5m, canopy_5m, "Value <> "+str(lc.fuel_model))
+          canopy_zone = os.path.join(outputs, "canopy_"+str(zone_num)+".tif")
+          canopy_5m = os.path.join(scratchws, "cc_5m_"+str(zone_num)+".tif")
+          tree_cover = os.path.join(scratchgdb, "tree")
+          this = ExtractByMask(canopy_5m, tree_cover)
+          this.save(canopy_zone)
 
           estimate_time(zone_num)
           #zones = searchcursor.next()
@@ -1005,16 +1054,17 @@ def gen_lc():
 
 
   def merge_tiles():
-    LCP_layers = ["fuel", "canopy", "stand", "elevation", "slope", "aspect"]
-    arcpy.env.snapRaster = naip
+    LCP_layers = ["fuel", "canopy", "stand", "dem", "slope", "aspect"]
+    arcpy.env.extent = analysis_area
+    arcpy.env.snapRaster = naip_5m
 
     for layer in LCP_layers:
 
       layer_lst = []
-      for i in range(len(tot_num_tiles)):
+      for i in range(int(tot_num_tiles)):
 
         tile = os.path.join(outputs, layer+"_"+str(i)+".tif")
-        if arcpy.Exists(scratchgdb):
+        if arcpy.Exists(tile):
           layer_lst.extend([tile])
 
       text = "Joining "+str(len(layer_lst))+" "+layer+" tiles."
@@ -1024,13 +1074,13 @@ def gen_lc():
       output = os.path.join(outputs, "lcp_"+layer+".tif")
       ascii_output = os.path.join(outputs, layer+".asc")
 
-      arcpy.MosaicToNewRaster_management(layer_lst, outputs, "lcp_"+layer+".tif", "", "32_BIT_SIGNED", "", 1, "FIRST", "")
+      arcpy.MosaicToNewRaster_management(layer_lst, outputs, "lcp_"+layer+".tif", "", "32_BIT_SIGNED", "", 1, "MAXIMUM", "")
       arcpy.RasterToASCII_conversion(output, ascii_output)
 
       if layer == "fuel":
         arcpy.RasterToPolygon_conversion(output, classified_landscape, "NO_SIMPLIFY", "VALUE")
         text = "Land Cover objects created."
-      generateMessage(text)
+        generateMessage(text)
     #-----------------------------------------------
     #-----------------------------------------------
 
@@ -1159,8 +1209,8 @@ def measure_fire_behavior():
     text = "Running OBIA on fire behavior metrics."
     newProcess(text)
     # Set Cell Size
-    arcpy.env.snapRaster = naip
-    cell_size = str(arcpy.GetRasterProperties_management(naip, "CELLSIZEX", ""))
+    arcpy.env.snapRaster = naip_5m
+    cell_size = str(arcpy.GetRasterProperties_management(naip_1m, "CELLSIZEX", ""))
     naip_cell_size = cell_size +" " +cell_size
     #-----------------------------------------------
     #-----------------------------------------------
