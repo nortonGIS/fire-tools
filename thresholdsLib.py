@@ -50,29 +50,40 @@ def get_fuels(bioregion):
     details.extend([[landcover, fuelmodel, cm_heights, [spectral_detail, spatial_detail, min_seg_size]]])
 
   elif bioregion == "CA_Oak_Woodlands":
+    cover = "vegetation"
     landcover = "grass"
     fuelmodel = "01"
     cm_heights = [-1, 60.96]
     spectral_detail, spatial_detail, min_seg_size = 10, 10, 1
-    details.extend([[landcover, fuelmodel, cm_heights, [spectral_detail, spatial_detail, min_seg_size]]])
+    details.extend([[cover, landcover, fuelmodel, cm_heights, [spectral_detail, spatial_detail, min_seg_size]]])
     
+    cover = "vegetation"
     landcover = "shrub"
     fuelmodel = "06"
     cm_heights = [60.96, 304.8]
     spectral_detail, spatial_detail, min_seg_size = 20, 20, 1
-    details.extend([[landcover, fuelmodel, cm_heights, [spectral_detail, spatial_detail, min_seg_size]]])
+    details.extend([[cover, landcover, fuelmodel, cm_heights, [spectral_detail, spatial_detail, min_seg_size]]])
    
+    cover = "vegetation"
     landcover = "tree"
     fuelmodel = "02"
     cm_heights = [304.8, 10000]
     spectral_detail, spatial_detail, min_seg_size = 20, 20, 1
-    details.extend([[landcover, fuelmodel, cm_heights, [spectral_detail, spatial_detail, min_seg_size]]])
+    details.extend([[cover, landcover, fuelmodel, cm_heights, [spectral_detail, spatial_detail, min_seg_size]]])
 
-    landcover = "nonburnable"
-    fuelmodel = "99"
-    cm_heights = ["", ""]
+    cover = "impervious"
+    landcover = "pavement"
+    fuelmodel = "98"
+    cm_heights = [0, 60.96]
     spectral_detail, spatial_detail, min_seg_size = "", "",""
-    details.extend([[landcover, fuelmodel, cm_heights, [spectral_detail, spatial_detail, min_seg_size]]])
+    details.extend([[cover, landcover, fuelmodel, cm_heights, [spectral_detail, spatial_detail, min_seg_size]]])
+
+    cover = "impervious"
+    landcover = "building"
+    fuelmodel = "99"
+    cm_heights = [60.96, 10000]
+    spectral_detail, spatial_detail, min_seg_size = "", "",""
+    details.extend([[cover, landcover, fuelmodel, cm_heights, [spectral_detail, spatial_detail, min_seg_size]]])
 
   elif bioregion == "SoCal_Mountains":
     landcover = "grass"
@@ -125,17 +136,17 @@ def get_thresholds(bioregion, spectral_index):
 
   elif bioregion == "CA_Oak_Woodlands":
     if spectral_index == "ndvi":
-        imp = "-880 <= x <= -300"
-        veg = "-180 <= x <= 500" 
+        imp = [-1000, -300]
+        veg = [-180, 1000] 
     elif spectral_index == "ndwi":
-        imp = "240 <= x <= 910" 
-        veg = "-410 <= x <= 180" 
+        imp = [240, 1000]
+        veg = [-1000, 180] 
     elif spectral_index == "gndvi":
-        imp = "-940<= x <= -170" 
-        veg = "-300 <= x <= 380" 
+        imp = [-1000, -170] 
+        veg = [-300, 1000]
     elif spectral_index == "osavi":
-        imp = "-940 <= x <= -250" 
-        veg = "-170 <= x <= 760" 
+        imp = [-1000, -250] 
+        veg = [-170, 1000] 
 
   elif bioregion == "SoCal_Mountains":
     if spectral_index == "ndvi":
@@ -151,7 +162,8 @@ def get_thresholds(bioregion, spectral_index):
       imp = "-1000 <= x <= 400"
       veg = "400 <= x <= 1000"
 
-  return [imp,veg]
+  return [spectral_index, imp, veg]
+
 
 def get_tree_health(bioregion, spectral_index):
 
