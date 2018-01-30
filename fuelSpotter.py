@@ -3,14 +3,14 @@
 # Author:      Peter Norton
 # Created:     05/25/2017
 # Updated:     01/27/2018
-# Copyright:   (c) Peter Norton and Matt Ashenfarb 2017
+# Copyright:   (c) Peter Norton and Matthew Ashenfarb 2017
 #--------------------------------------------------------------------------------------------------------------------------------------
 #--------------------------------------------------------------------------------------------------------------------------------------
 #
 # USER LOG
-date = "1_27"
+date = "1_29"
 # Geographic Data
-location_name = "Orinda_Downs"
+location_name = "Tubbs"
 bioregion = "CA_Oak_Woodlands" #["Sierra_Nevada_Mountains","CA_Oak_Woodlands", "SoCal_Mountains"]
 
 
@@ -24,7 +24,7 @@ summary = ""
 projection = "UTMZ10"  #["UTMZ10", "UTMZ11"]
 lidar_date = 2008
 naip_date = 2009
-burn_metrics = ["fml", "ros", "fi", "fli"]
+burn_metrics = ["fml", "ros", "fli", "fi"] #fi
 
 # Settings
 coarsening_size = "5" #meters
@@ -50,15 +50,13 @@ input_weather = ""
 #-----------------------------------------------
 #-----------------------------------------------
 
-align_inputs = "No" # "Align and Scale inputs"
-pipe_analysis = "No"  # "Reduce Analysis to Infrastructure Buffer"
+align_inputs = "Yes" # "Align and Scale inputs"
 generate_land_cover = "Yes"  # "Generate Land Cover & SVM"
-fire_behavior = "No"  # "Run FlamMap & Join Burns"
+fire_behavior = "Yes"  # "Run FlamMap & Join Burns"
 create_MXD = "No"  # "Create or Update MXD"
 
 processes = [
 [align_inputs, "Align Inputs"],
-[pipe_analysis, "Extract Infrastructure"],
 [generate_land_cover, "Generate Land Cover"],
 [fire_behavior, "Assess Fire Behavior"],
 [create_MXD, "Create MXD: "+location_name]
@@ -87,7 +85,7 @@ from arcpy.sa import *
 
 drive = os.path.abspath(sys.path[0])[0]
 # Overwrite Setting
-script_db = drive+":\\Modeling\\fire-tools"
+script_db = drive+":\\TFS_Fire\\fire-tools"
 #-----------------------------------------------
 #-----------------------------------------------
 
@@ -113,8 +111,13 @@ dependent_scripts = [
 
 # Dependent dlls
 dependent_dlls = [
-  "GenLCPv2.dll",
+  "GenLCP_6inp.dll",
   "FlamMapF.dll"
+]
+
+# Dependent FlamMap inputs
+dependent_inputs = [
+  "fuel_moisture.fms"
 ]
 # Create new project folder and set environment
 scriptpath = sys.path[0] # Find script
@@ -171,6 +174,9 @@ elif os.path.basename(scriptpath) != date:
         for dependent_dll in dependent_dlls:
           shutil.copy2(os.path.join(script_db, dependent_dll), os.path.join(input_folder, dependent_dll)) # copies main to script folder
   #os.remove(scriptpath)
+for dependent_input in dependent_inputs:
+          input_folder = os.path.join(current_project, "01_Inputs")
+          shutil.copy2(os.path.join(script_db, dependent_input), os.path.join(input_folder, dependent_input)) # copies main to script folder
 
 # Dependent scripts
 from imageEnhancements import createImageEnhancements
@@ -191,7 +197,7 @@ arcpy.env.overwriteOutput = True
 #-----------------------------------------------
 # Set Global Variables
 # Raw inputs
-naip_1m = os.path.join(inputs, input_naip) # NAIP Imagery at 1m res
+raw_naip = os.path.join(inputs, input_naip) # NAIP Imagery at 1m res
 lasd = os.path.join(inputs, input_las)
 pipeline = os.path.join(inputs, input_pipeline) # Pipeline
 fuel_moisture = os.path.join(inputs, input_fuel_moisture) # Fuel Moisture
@@ -208,6 +214,7 @@ weather = os.path.join(inputs, input_weather) # Weather
 bnd_zones = os.path.join(inputs, input_bnd) # Bounding box for each tile
 
 # Outputs
+naip_1m = os.path.join(inputs, "naip_1m.tif") # NAIP Imagery at 1m res
 naip_5m = os.path.join(outputs,"naip_5m.tif")
 S1_classified = os.path.join(outputs, "S1_classified.shp")
 classified_landscape = os.path.join(outputs, "classified.shp")
@@ -341,6 +348,10 @@ def find_stems(fuel, fm):
   # Create raster of vegetation heights
 
   global zone_num
+  bnd = os.path.join(scratchws, "zone_"+str(zone_num)+".shp")
+
+  arcpy.env.extent = bnd
+  arcpy.env.snapRaster = naip_1m
 
   # Parameters
   this = SetNull(fuel, heights_1m, "Value < "+str(fm))
@@ -350,8 +361,8 @@ def find_stems(fuel, fm):
   max_base_height = max_canopy_height
   incr = -1
   i = 0
-  
-  while max_canopy_height > 1.8:
+
+  while max_canopy_height > 3.048:
       upper = max_canopy_height
       max_canopy_height += incr
       lower = max_canopy_height
@@ -368,24 +379,24 @@ def find_stems(fuel, fm):
       new_canopies = os.path.join(scratchgdb, "new_canopies_"+str(zone_num))
       new_canopy_centroids = os.path.join(scratchgdb, "new_canopy_cntr_"+str(zone_num))
       existing_canopy_centroids = os.path.join(scratchgdb, "existing_canopy_cntr_"+str(zone_num))
-      
+
       existing_canopies = os.path.join(scratchgdb, "existing_canopies_"+str(zone_num))
       temp = os.path.join(scratchgdb, "temp_"+str(zone_num))
-      
+
       delete_shapes = [canopy_select, ht_slice, slice_sms, slice_poly, canopies, new_canopies]
 
       vert_max = Con(Int(zone_heights)>= upper, upper, Int(zone_heights))
       vert_min = Con(Int(vert_max) <= lower, 0, Int(vert_max))
       vert_min.save(ht_slice)
-      
+
       #convert slice to polygons and extract canopies
-     
+
       arcpy.RasterToPolygon_conversion(ht_slice, slice_poly, "NO_SIMPLIFY", "VALUE")
       arcpy.Select_analysis (slice_poly, canopy_select, "gridcode <> 0")
       arcpy.Dissolve_management(canopy_select, canopies, "", "", "SINGLE_PART")
       arcpy.AddField_management(canopies, "h", "INTEGER")
       arcpy.CalculateField_management(canopies, "h", 1)
-      
+
 
       #join previous centroids to canopy polygons
       if i > 0:
@@ -397,18 +408,18 @@ def find_stems(fuel, fm):
         arcpy.FeatureToPoint_management(new_canopies, new_canopy_centroids, "INSIDE")
         arcpy.AddField_management(new_canopy_centroids, "Exist", "INTEGER")
         arcpy.CalculateField_management(new_canopy_centroids, "Exist", 1)
-        
+
         new_cntr_fields = [f.name for f in arcpy.ListFields(new_canopy_centroids)]
         delete_fields = []
         for field in new_cntr_fields:
           if field not in ex_cntr_fields:
             arcpy.DeleteField_management(new_canopy_centroids, field)
-        
+
         arcpy.Append_management(new_canopy_centroids, existing_canopy_centroids, "TEST")
-          
+
       else:
         new_canopies = canopies
-    
+
         #create new canopy centroids
         arcpy.FeatureToPoint_management(new_canopies, existing_canopy_centroids, "INSIDE")
         arcpy.AddField_management(existing_canopy_centroids, "Exist", "INTEGER")
@@ -420,13 +431,18 @@ def find_stems(fuel, fm):
       i += 1
 
   arcpy.CreateThiessenPolygons_analysis(existing_canopy_centroids, thiessen)
-  thiessen_rast = os.path.join(scratchgdb, "thiessen_rast_"+str(zone_num))
-  arcpy.PolygonToRaster_conversion(thiessen, "OBJECTID", thiessen_rast, "CELL_CENTER", "", 1)
-  arcpy.RasterToPolygon_conversion(thiessen_rast, thiessen, "NO_SIMPLIFY", "Value")
-
 
   arcpy.RasterToPolygon_conversion(fuel, tree_bnd, "NO_SIMPLIFY", "Value")
   arcpy.Clip_analysis(thiessen, tree_bnd, tree_thiessen)
+
+  thiessen_rast = os.path.join(scratchgdb, "thiessen_rast_"+str(zone_num))
+
+
+  arcpy.env.snapRaster = naip_5m
+  arcpy.PolygonToRaster_conversion(tree_thiessen, "OBJECTID", thiessen_rast, "CELL_CENTER", "", coarsening_size)
+  return thiessen_rast
+
+
 #-----------------------------------------------
 #-----------------------------------------------
 
@@ -460,6 +476,7 @@ arcpy.AddMessage("-----------------------------")
 #-----------------------------------------------
 def align():
 
+  pipe_analysis = "No"  # "Reduce Analysis to Infrastructure Buffer"
   #-----------------------------------------------
   #-----------------------------------------------
   text = "Aligning cells."
@@ -470,22 +487,45 @@ def align():
   text = "Resampling NAIP image."
   generateMessage(text)
 
-  bnd_zones_rast = os.path.join(scratchgdb, "bnd_zones_rast")
+  temp_bnd = os.path.join(scratchgdb, "temp_bnd")
+  temp = os.path.join(scratchgdb, "temp")
+  temp_bnd_poly = os.path.join(scratchgdb, "temp_bnd_poly")
+  bnd_rast_1m = os.path.join(scratchgdb, "bnd_rast_1m")
+  bnd_rast_5m = os.path.join(scratchgdb, "bnd_rast_5m")
   cell_size = int(coarsening_size)
   naip_cell_size = str(cell_size) +" "+str(cell_size)
-  arcpy.Resample_management(naip_1m, naip_5m, naip_cell_size, "BILINEAR") # Bilinear Interpolation reduce image distortion when scaling.It linearly interpolates the nearest 4 pixels
+
+  # remove null values in naip extens
+  this = Con(IsNull(raw_naip),0, 1)
+  this.save(temp_bnd)
+  arcpy.RasterToPolygon_conversion(temp_bnd, temp_bnd_poly, "NO_SIMPLIFY", "Value")
+  arcpy.Select_analysis(temp_bnd_poly, temp, "gridcode = 1")
+  this = ExtractByMask(raw_naip, temp)
+  this.save(raw_naip)
+
+  # create fit bnd
+  arcpy.Resample_management(raw_naip, naip_1m, "1 1", "BILINEAR") # Bilinear Interpolation reduce image distortion when scaling.It linearly interpolates the nearest 4 pixels
+  this = Int(Raster(naip_1m)*0)
+  this = Aggregate(this, coarsening_size, "MEDIAN", "TRUNCATE")
+  this.save(bnd_rast_5m)
+  arcpy.DefineProjection_management(bnd_rast_5m, projection)
+  arcpy.RasterToPolygon_conversion(bnd_rast_5m, bnd_zones, "NO_SIMPLIFY", "Value")
+
+  arcpy.env.extent = bnd_rast_5m
+  arcpy.Resample_management(bnd_rast_5m, bnd_rast_1m, "1 1", "BILINEAR") # Bilinear Interpolation reduce image distortion when scaling.It linearly interpolates the nearest 4 pixels
+  
+  arcpy.env.snapRaster = bnd_rast_1m
+  this = ExtractByMask(raw_naip, bnd_rast_1m)
+  this.save(naip_1m)
+  
+  arcpy.env.extent = naip_1m
+  arcpy.env.snapRaster = bnd_rast_5m
+
   #arcpy.DefineProjection_management(naip_5m, projection)
   bands = ["Band_1","Band_2","Band_3","Band_4"] # NAIP has 4 bands (in increasing order) B,G,R,NIR
 
-  arcpy.env.snapRaster = naip_1m
   # Create a fitted, resampled boundary
-  text = "Creating a boundary based on resampled NAIP imagery extent."
-  generateMessage(text)
-
-  this = Int(Raster(naip_1m)*0)
-  this.save(bnd_zones_rast)
-  arcpy.DefineProjection_management(bnd_zones_rast, projection)
-  arcpy.RasterToPolygon_conversion(bnd_zones_rast, bnd_zones, "NO_SIMPLIFY", "Value")
+  arcpy.Resample_management(naip_1m, naip_5m, naip_cell_size, "BILINEAR") # Bilinear Interpolation reduce image distortion when scaling.It linearly interpolates the nearest 4 pixels
 
   #make fishnet with 1km x 1km
   analysis_area = os.path.join(outputs, "bnd_fishnet.shp")
@@ -508,7 +548,7 @@ def align():
 
   #-----------------------------------------------
   #-----------------------------------------------
-  
+
 
 
   if pipe_analysis == "Yes":
@@ -599,10 +639,10 @@ def gen_lc():
 
   create_obia = "Yes"
 
-  process_lidar = "No"
+  process_lidar = "Yes"
   classify_S1 = "Yes"
   classify_S2 = "Yes"
-  find_canopies = "No"
+  find_canopies = "Yes"
   merge_landcover_tiles = "Yes"
 
 
@@ -612,7 +652,7 @@ def gen_lc():
   fuel_lst = []
   canopy_lst = []
   stand_lst = []
-  elevation_lst = [] 
+  elevation_lst = []
   slope_lst = []
   aspect_lst = []
 
@@ -631,7 +671,7 @@ def gen_lc():
   while zones:
     global zone_num
     zone_num = zones.getValue("FID")
-    if zone_num < -1:  #skip if needed
+    if zone_num <-1:  #skip if needed
       #If tile is created already, skip to next in queue
       zones = searchcursor.next()
 
@@ -676,6 +716,12 @@ def gen_lc():
         this.save(naip_zone_1m)
 
         def lasToHeights():
+          extract_las = "Yes"
+          create_elevation = "Yes"
+          create_slope = "Yes"
+          create_aspect = "Yes"
+          create_canopy = "Yes"
+          create_stand = "Yes"
 
           # -------------Create DEM, DSM, Heights, Canopy Cover--------------------
           #
@@ -690,7 +736,7 @@ def gen_lc():
 
           arcpy.env.snapRaster = naip_1m
           cell_size = int(int(coarsening_size)*scale_naip)
-          
+
           #check if NAIP and LAS are in same projection
           las_scale = 1
           las_cell_size = 1
@@ -699,159 +745,177 @@ def gen_lc():
             naip_zone_LAS_proj = os.path.join(scratchws, "prj_n_"+str(zone_num))
             las_scale = 0.3048
             las_cell_size = 3.28084
-            
+
             arcpy.ProjectRaster_management(naip_zone_1m, naip_zone_LAS_proj, lidar_projection, "BILINEAR")
             naip_lidar_prj = naip_zone_LAS_proj
             arcpy.env.extent = naip_lidar_prj
 
           #Extract LAS by NAIP zone bnd
-          arcpy.ddd.ExtractLas(lasd, outputs, naip_lidar_prj, rearrange_points='MAINTAIN_POINTS', compute_stats='NO_COMPUTE_STATS', out_las_dataset = lasd_zone)
-          
+          def extract():
+            arcpy.ddd.ExtractLas(lasd, outputs, naip_lidar_prj, rearrange_points='MAINTAIN_POINTS', compute_stats='NO_COMPUTE_STATS', out_las_dataset = lasd_zone)
+          if extract_las == "Yes":
+            extract()
           #
           # Create DEM
-          text = "Creating Elevation."
-          generateMessage(text)
+          def elevation():
+            text = "Creating Elevation."
+            generateMessage(text)
 
-          arcpy.env.snapRaster = naip_lidar_prj
-          LP_zone = os.path.join(scratchws, "LP_"+str(zone_num)+".lasd")
-          arcpy.MakeLasDatasetLayer_management(lasd_zone,LP_zone,"","Last Return","","","","")
-          arcpy.LasDatasetToRaster_conversion(LP_zone, las_dem, "ELEVATION", "BINNING MINIMUM LINEAR", "FLOAT", "CELLSIZE", las_cell_size, las_scale)
-          arcpy.DefineProjection_management(las_dem, lidar_projection)
+            arcpy.env.snapRaster = naip_lidar_prj
+            LP_zone = os.path.join(scratchws, "LP_"+str(zone_num)+".lasd")
+            arcpy.MakeLasDatasetLayer_management(lasd_zone,LP_zone,"","Last Return","","","","")
+            arcpy.LasDatasetToRaster_conversion(LP_zone, las_dem, "ELEVATION", "BINNING MINIMUM LINEAR", "FLOAT", "CELLSIZE", las_cell_size, las_scale)
+            arcpy.DefineProjection_management(las_dem, lidar_projection)
 
-          arcpy.env.extent = bnd
-          arcpy.env.snapRaster = naip_1m
-          arcpy.ProjectRaster_management(las_dem, temp, projection, "BILINEAR")
-          
-          #arcpy.env.snapRaster = naip_5m
-          this = ExtractByMask(temp, bnd)
-          this.save(dem_1m)
-          
-          arcpy.env.snapRaster = naip_5m
-          this = Aggregate(dem_1m, coarsening_size, "MEDIAN")
-          this.save(dem_zone)
+            arcpy.env.extent = bnd
+            arcpy.env.snapRaster = naip_1m
+            arcpy.ProjectRaster_management(las_dem, temp, projection, "BILINEAR")
 
-          # Create Slope
-          text = "Creating Slope."
-          generateMessage(text)
-          
-          arcpy.env.snapRaster = naip_1m
-          slope_1m = os.path.join(scratchgdb, "slope_1m_"+str(zone_num))
-          slope_zone = os.path.join(outputs, "slope_"+str(zone_num)+".tif")
-          arcpy.Slope_3d(dem_1m, slope_1m, "DEGREE")
+            #arcpy.env.snapRaster = naip_5m
+            this = ExtractByMask(temp, bnd)
+            this.save(dem_1m)
 
-          arcpy.env.snapRaster = naip_5m
-          this = Con(IsNull(slope_1m), 0, slope_1m)
-          this = Aggregate(this, coarsening_size, "MEDIAN")
-          this.save(slope_zone)
+            arcpy.env.snapRaster = naip_5m
+            this = Aggregate(dem_1m, coarsening_size, "MEDIAN")
+            this.save(dem_zone)
+          if create_elevation == "Yes":
+            elevation()
 
-          # Create Aspect
-          text = "Creating Aspect."
-          generateMessage(text)
+          def slope():
+            # Create Slope
+            text = "Creating Slope."
+            generateMessage(text)
 
-          arcpy.env.snapRaster = naip_1m
-          aspect_1m = os.path.join(scratchgdb, "aspect_1m_"+str(zone_num))
-          aspect_zone = os.path.join(outputs, "aspect_"+str(zone_num)+".tif")
-          arcpy.Aspect_3d(dem_1m, aspect_1m)
+            arcpy.env.snapRaster = naip_1m
+            slope_1m = os.path.join(scratchgdb, "slope_1m_"+str(zone_num))
+            slope_zone = os.path.join(outputs, "slope_"+str(zone_num)+".tif")
+            arcpy.Slope_3d(dem_1m, slope_1m, "DEGREE")
 
-          arcpy.env.snapRaster = naip_5m
-          this = Con(IsNull(aspect_1m), 0, aspect_1m)
-          this = Aggregate(this, coarsening_size, "MEDIAN")
-          this.save(aspect_zone)
+            arcpy.env.snapRaster = naip_5m
+            this = Con(IsNull(slope_1m), 0, slope_1m)
+            this = Aggregate(this, coarsening_size, "MEDIAN")
+            this.save(slope_zone)
+          if create_slope == "Yes":
+            slope()
+
+          def aspect():
+            # Create Aspect
+            text = "Creating Aspect."
+            generateMessage(text)
+
+            arcpy.env.snapRaster = naip_1m
+            aspect_1m = os.path.join(scratchgdb, "aspect_1m_"+str(zone_num))
+            aspect_zone = os.path.join(outputs, "aspect_"+str(zone_num)+".tif")
+            arcpy.Aspect_3d(dem_1m, aspect_1m)
+
+            arcpy.env.snapRaster = naip_5m
+            this = Con(IsNull(aspect_1m), 0, aspect_1m)
+            this = Aggregate(this, coarsening_size, "MEDIAN")
+            this.save(aspect_zone)
+          if create_aspect == "Yes":
+            aspect()
 
           # Create Canopy Cover
+          def canopy():
+            text = "Creating Canopy Cover."
+            generateMessage(text)
 
-          text = "Creating Canopy Cover."
-          generateMessage(text)
+            All_count = os.path.join(scratchgdb, "All_count_"+str(zone_num))
+            All_1m = os.path.join(scratchgdb, "All_1m_"+str(zone_num))
+            All_5m = os.path.join(scratchgdb, "All_5m_"+str(zone_num))
 
-          All_count = os.path.join(scratchgdb, "All_count_"+str(zone_num))
-          All_1m = os.path.join(scratchgdb, "All_1m_"+str(zone_num))
-          All_5m = os.path.join(scratchgdb, "All_5m_"+str(zone_num))
+            arcpy.env.extent = naip_lidar_prj
+            arcpy.env.snapRaster = naip_lidar_prj
+            arcpy.LasPointStatsAsRaster_management(lasd_zone, All_count,"POINT_COUNT","CELLSIZE", las_cell_size)
+            arcpy.DefineProjection_management(All_count, lidar_projection)
 
-          arcpy.env.extent = naip_lidar_prj
-          arcpy.env.snapRaster = naip_lidar_prj
-          arcpy.LasPointStatsAsRaster_management(lasd_zone, All_count,"POINT_COUNT","CELLSIZE", las_cell_size)
-          arcpy.DefineProjection_management(All_count, lidar_projection)
-
-          arcpy.env.extent = bnd
-          arcpy.env.snapRaster = naip_1m
-          arcpy.ProjectRaster_management(All_count, All_1m, projection, "BILINEAR")
-          this = Con(IsNull(All_1m),0,All_1m)
-
-          
-          arcpy.env.snapRaster = naip_5m
-          this = Aggregate(this, coarsening_size, "MEDIAN")
-          this.save(All_5m)
-          
-          FP_zone = os.path.join(scratchws, "FP_"+str(zone_num)+".lasd")
-          FP_count = os.path.join(scratchgdb, "FP_count_"+str(zone_num))
-          FP_1m = os.path.join(scratchgdb, "FP_1m_"+str(zone_num))
-          FP_5m = os.path.join(scratchgdb, "FP_5m_"+str(zone_num))
-
-          arcpy.env.extent = naip_lidar_prj
-          arcpy.env.snapRaster = naip_lidar_prj
-          arcpy.MakeLasDatasetLayer_management(lasd_zone, FP_zone,"","First of Many","","","","")
-          arcpy.LasPointStatsAsRaster_management(FP_zone, FP_count,"POINT_COUNT","CELLSIZE",las_cell_size)
-          arcpy.DefineProjection_management(FP_count, lidar_projection)
-
-          arcpy.env.extent = bnd
-          arcpy.env.snapRaster = naip_1m
-          arcpy.ProjectRaster_management(FP_count, FP_1m, projection, "BILINEAR")
-          this = Con(IsNull(FP_1m),0,FP_1m,)
-          this = ExtractByMask(temp, bnd)
-
-          arcpy.env.snapRaster = naip_5m
-          this = Aggregate(this, coarsening_size, "MEDIAN")
-          this.save(FP_5m)
-
-          
-          canopy_5m = os.path.join(scratchws, "cc_5m_"+str(zone_num)+".tif")
-          this = Int(Float(Divide(Float(FP_5m) / Float(All_5m)))*100)
-          this = Con(this, 99, this, "Value = 100")
-          this.save(canopy_5m)
-
-          #
-          # Create DSM
-
-          text = "Creating Heights."
-          generateMessage(text)
-
-          arcpy.env.extent = naip_lidar_prj
-          arcpy.env.snapRaster = naip_lidar_prj
-          arcpy.LasDatasetToRaster_conversion(lasd_zone, las_dsm, "ELEVATION", "BINNING MAXIMUM NONE", "FLOAT", "CELLSIZE", las_cell_size, las_scale)
-          arcpy.DefineProjection_management(las_dsm, lidar_projection)
-          this_dsm = Con(IsNull(las_dsm),las_dem, las_dsm)
-          this_dsm = FocalStatistics(this_dsm, NbrRectangle(2,2, "CELL"), "MAXIMUM", "DATA")
-          dsm_smooth = os.path.join(scratchws, "dsm_smooth.tif")
-          this_dsm.save(dsm_smooth)
-
-          arcpy.env.extent = bnd
-          arcpy.env.snapRaster = naip_1m
-          arcpy.ProjectRaster_management(dsm_smooth, temp, projection, "BILINEAR")
-          this = ExtractByMask(temp, bnd)
-          this.save(dsm_1m)
+            arcpy.env.extent = bnd
+            arcpy.env.snapRaster = naip_1m
+            arcpy.ProjectRaster_management(All_count, All_1m, projection, "BILINEAR")
+            this = Con(IsNull(All_1m),0,All_1m)
 
 
-          # Create Heights
-          hts_interm1 = os.path.join(scratchws,"hts_interm1.tif")
-          hts_interm2 = os.path.join(scratchws,"hts_interm2.tif")
-          heights_sp = os.path.join(scratchws, "hts_sp.tif")
-          heights_1m = os.path.join(outputs,"heights_1m_"+str(zone_num)+".tif")
+            arcpy.env.snapRaster = naip_5m
+            this = Aggregate(this, coarsening_size, "MEDIAN")
+            this.save(All_5m)
+
+            FP_zone = os.path.join(scratchws, "FP_"+str(zone_num)+".lasd")
+            FP_count = os.path.join(scratchgdb, "FP_count_"+str(zone_num))
+            FP_1m = os.path.join(scratchgdb, "FP_1m_"+str(zone_num))
+            FP_5m = os.path.join(scratchgdb, "FP_5m_"+str(zone_num))
+
+            arcpy.env.extent = naip_lidar_prj
+            arcpy.env.snapRaster = naip_lidar_prj
+            arcpy.MakeLasDatasetLayer_management(lasd_zone, FP_zone,"","First of Many","","","","")
+            arcpy.LasPointStatsAsRaster_management(FP_zone, FP_count,"POINT_COUNT","CELLSIZE",las_cell_size)
+            arcpy.DefineProjection_management(FP_count, lidar_projection)
+
+            arcpy.env.extent = bnd
+            arcpy.env.snapRaster = naip_1m
+            arcpy.ProjectRaster_management(FP_count, FP_1m, projection, "BILINEAR")
+            this = Con(IsNull(FP_1m),0,FP_1m,)
+            arcpy.env.snapRaster = naip_5m
+            this = Aggregate(this, coarsening_size, "MEDIAN")
+            this.save(FP_5m)
 
 
-          ht = Float(dsm_1m)-Float(dem_1m)
-          ht = Con(IsNull(Float(ht)), 0, Float(ht))
-          ht = Con(Float(ht) < 0, 0, Float(ht))
-          ht.save(heights_1m)
-          
-          arcpy.env.snapRaster = naip_5m
-          this = Aggregate(heights_1m, coarsening_size, "MEDIAN")
-          this.save(heights_zone)
+            canopy_5m = os.path.join(scratchws, "cc_5m_"+str(zone_num)+".tif")
+            this = Int((Float(FP_5m) / Float(All_5m))*100)
+            this = Con(IsNull(this),0,this,)
+            this = Con(this, 99, this, "Value = 100")
+            this = ExtractByMask(this, bnd)
+            this.save(canopy_5m)
+          if create_canopy == "Yes":
+            canopy()
 
-          # Interpolate over error due to birds
-          # bird_height = "150"
+          def stand():
+            #
+            # Create DSM
+
+            text = "Creating Heights."
+            generateMessage(text)
+
+            arcpy.env.extent = naip_lidar_prj
+            arcpy.env.snapRaster = naip_lidar_prj
+            arcpy.LasDatasetToRaster_conversion(lasd_zone, las_dsm, "ELEVATION", "BINNING MAXIMUM NONE", "FLOAT", "CELLSIZE", las_cell_size, las_scale)
+            arcpy.DefineProjection_management(las_dsm, lidar_projection)
+            this_dsm = Con(IsNull(las_dsm),las_dem, las_dsm)
+            this_dsm = FocalStatistics(this_dsm, NbrRectangle(2,2, "CELL"), "MAXIMUM", "DATA")
+            dsm_smooth = os.path.join(scratchws, "dsm_smooth.tif")
+            this_dsm.save(dsm_smooth)
+
+            arcpy.env.extent = bnd
+            arcpy.env.snapRaster = naip_1m
+            arcpy.ProjectRaster_management(dsm_smooth, temp, projection, "BILINEAR")
+            this = ExtractByMask(temp, bnd)
+            this.save(dsm_1m)
+
+
+            # Create Heights
+            hts_interm1 = os.path.join(scratchws,"hts_interm1.tif")
+            hts_interm2 = os.path.join(scratchws,"hts_interm2.tif")
+            heights_sp = os.path.join(scratchws, "hts_sp.tif")
+            heights_1m = os.path.join(outputs,"heights_1m_"+str(zone_num)+".tif")
+
+
+            ht = Float(dsm_1m)-Float(dem_1m)
+            ht = Con(IsNull(Float(ht)), 0, Float(ht))
+            ht = Con(Float(ht) < 0, 0, Float(ht))
+
+            # Interpolate over error due to birds
+            bird_height = "60" #meters
+            ht = Con(Float(ht), 0, Float(ht), "Value > "+ bird_height)
+            ht.save(heights_1m)
+
+            arcpy.env.snapRaster = naip_5m
+            this = Aggregate(heights_1m, coarsening_size, "MEDIAN")
+            this.save(heights_zone)
+          if create_stand == "Yes":
+            stand()
           # heights = SetNull(Float(ht),Float(ht),"VALUE > "+bird_height)
           # if int(arcpy.GetRasterProperties_management(heights,"ANYNODATA").getOutput(0)):
           #   arcpy.AddMessage("Interpolating under clouds/birds.")
+          #
           #   heights.save(hts_interm1)
           #   heights.save(hts_interm2)
           #   del heights
@@ -957,7 +1021,7 @@ def gen_lc():
 
         if classify_S1 == "Yes":
           burnable()
-      
+
         def lc():
 
           #s1_heights = os.path.join(scratchgdb, landcover+"_heights")
@@ -977,10 +1041,10 @@ def gen_lc():
           this = Int(Float(heights_zone)*100)
           this.save(cm_heights)
 
-          this = Con(s1, cm_heights, -9999, "Value = -1")
+          this = Con(s1_1m, cm_heights, -9999, "Value = -1")
           this.save(imp_heights)
 
-          this = Con(s1, cm_heights, -9999, "Value = 1")
+          this = Con(s1_1m, cm_heights, -9999, "Value = 1")
           this.save(veg_heights)
 
           location = Fire_Env(bioregion)
@@ -988,7 +1052,7 @@ def gen_lc():
           fuel_lst = []
           fuels_1m = os.path.join(outputs, "fuel_1m_"+str(zone_num)+".tif")
           fuels_5m = os.path.join(outputs, "fuel_"+str(zone_num)+".tif")
-          
+
 
           covers = location.fuels
           #arcpy.AddMessage(covers)
@@ -1005,15 +1069,17 @@ def gen_lc():
                 self.min_seg_size = cover[4][2]
 
             lc = landcover(cover)
-          
+
             fuel = os.path.join(scratchgdb, lc.stage)
 
-            
+
             text = "Geolocating "+str(lc.stage)+"."
             generateMessage(text)
 
             if lc.cover == "vegetation":
               fuels_heights = veg_heights
+              if lc.stage == "tree":
+                tree_fm = lc.fuel_model
 
             elif lc.cover == "impervious":
               fuels_heights = imp_heights
@@ -1024,22 +1090,26 @@ def gen_lc():
                 this.save(fuel)
                 fuel_lst.extend([fuel])
 
-                if lc.stage == "tree" and find_canopies == "Yes":
-
-                  find_stems(fuel, lc.fuel_model)
-    
           this = CellStatistics(fuel_lst, "SUM", "DATA")
           this.save(fuels_1m)
-          
+
           arcpy.env.snapRaster = naip_5m
           this = Aggregate(this, coarsening_size, "MEDIAN")
           this.save(fuels_5m)
+
+          tree_cover = os.path.join(scratchgdb, "tree")
+          this = Raster(tree_cover)
+          if find_canopies == "Yes" and this.maximum >0:
+            fuel = find_stems(fuel, tree_fm)
+            this = Con(fuels_5m, fuel, fuels_5m, "Value = "+tree_fm)
+            this.save(fuels_5m)
 
           # Canopy cover
           canopy_zone = os.path.join(outputs, "canopy_"+str(zone_num)+".tif")
           canopy_5m = os.path.join(scratchws, "cc_5m_"+str(zone_num)+".tif")
           tree_cover = os.path.join(scratchgdb, "tree")
           this = ExtractByMask(canopy_5m, tree_cover)
+          this = Con(IsNull(this), 0, this)
           this.save(canopy_zone)
 
           estimate_time(zone_num)
@@ -1063,9 +1133,9 @@ def gen_lc():
       layer_lst = []
       for i in range(int(tot_num_tiles)):
 
-        tile = os.path.join(outputs, layer+"_"+str(i)+".tif")
-        if arcpy.Exists(tile):
-          layer_lst.extend([tile])
+          tile = os.path.join(outputs, layer+"_"+str(i)+".tif")
+          if arcpy.Exists(tile):
+            layer_lst.extend([tile])
 
       text = "Joining "+str(len(layer_lst))+" "+layer+" tiles."
       generateMessage(text)
@@ -1097,117 +1167,95 @@ if generate_land_cover == "Yes":
 
 def measure_fire_behavior():
 
-  create_LCP = "No"
+  create_LCP = "Yes"
   run_FlamMap = "No"
-  join_burns = "Yes"
+  join_burns = "No"
 
   # behvaior metrics ={flame length, rate of spread, fire intenstiy}
-
-  processes = [
-  [create_LCP,"Create LCP"],
-  [run_FlamMap,"Run FlamMap"]]
-
-  for process in processes:
-    if process:
-      arcpy.AddMessage(process[1])
-
+  import ctypes
+  LCP = os.path.join(outputs, "landscape.lcp")
+  text = "Modeling wildfire Behavior."
+  newProcess(text)
   #-----------------------------------------------
   #-----------------------------------------------
   def LCP():
-    text = "Creating Landscape File."
-    newProcess(text)
+    text = "Creating LCP file."
+    generateMessage(text)
 
-    # Variables
-    fuel_lst = ["fuel", "canopy", "stand"]
-    elevation_lst = ["slope", "elevation", "aspect"]
-    ascii_layers = []
-    fuel = os.path.join(outputs, "fuel.asc")
-    arcpy.env.workspace = scratchws
+    import ctypes
+    ##
+    ### Variables
+    landscape_file = os.path.join(outputs, "landscape.lcp")
+    genlcp = os.path.join(dll_path, "GenLCP_6inp.dll")
+    Res = landscape_file
+    Elev = os.path.join(outputs,"dem.asc")
+    Slope = os.path.join(outputs,"slope.asc")
+    Aspect = os.path.join(outputs,"aspect.asc")
+    Fuel = os.path.join(outputs,"fuel.asc")
+    Canopy = os.path.join(outputs,"canopy.asc")
+    Stand = os.path.join(outputs, "stand.asc")
 
-    #-----------------------------------------------
-    #-----------------------------------------------
+    # Create LCP
+    dll = ctypes.cdll.LoadLibrary(genlcp)
+    fm = getattr(dll, "?Gen@@YAHPBD000000@Z")
+    fm.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p]
+    fm.restype = ctypes.c_int
 
-  #   #-----------------------------------------------
-  #   #-----------------------------------------------
-  #   text = "Creating LCP file."
-  #   generateMessage(text)
+    e = fm(Res, Elev, Slope, Aspect, Fuel, Canopy, Stand)
+    if e > 0:
+      arcpy.AddError("Error {0}".format(e))
+  if create_LCP == "Yes":
+    LCP()
+#-----------------------------------------------
+#-----------------------------------------------
 
-  #   import ctypes
-  #   ##
-  #   ### Variables
-  #   landscape_file = os.path.join(outputs, "landscape.lcp")
-  #   genlcp = os.path.join(dll_path, "GenLCPv2.dll")
-  #   Res = landscape_file
-  #   Elev = os.path.join(outputs,"elevation.asc")
-  #   Slope = os.path.join(outputs,"slope.asc")
-  #   Aspect = os.path.join(outputs,"aspect.asc")
-  #   Fuel = os.path.join(outputs,"fuel.asc")
-  #   Canopy = os.path.join(outputs,"canopy.asc")
+  #-----------------------------------------------
+  #-----------------------------------------------
+  def burn():
+    text = "Predicting Fire Behavior for Landscape."
+    generateMessage(text)
 
-  #   # Create LCP
-  #   dll = ctypes.cdll.LoadLibrary(genlcp)
-  #   fm = getattr(dll, "?Gen@@YAHPBD000000@Z")
-  #   fm.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p]
-  #   fm.restype = ctypes.c_int
+    # Burn in FlamMap
+    #
+    flamMap = os.path.join(dll_path, "FlamMapF.dll")
+    dll = ctypes.cdll.LoadLibrary(flamMap)
+    fm = getattr(dll, "?Run@@YAHPBD000NN000HHN@Z")
+    fm.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_double, ctypes.c_double, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_int, ctypes.c_int, ctypes.c_double]
+    fm.restype = ctypes.c_int
 
-  #   e = fm(Res, Elev, Slope, Aspect, Fuel, Canopy, "")
-  #   if e > 0:
-  #     arcpy.AddError("Error {0}".format(e))
-  # if create_LCP == "Yes":
-  #   LCP()
-  # #-----------------------------------------------
-  # #-----------------------------------------------
+    landscape_file = os.path.join(outputs, "landscape.lcp")
+    Landscape = landscape_file
+    FuelMoist = fuel_moisture
+    OutputFile = os.path.join(outputs, "Burn")
+    FuelModel = "-1"
+    Windspeed = 30.0  # mph
+    WindDir = 0.0   # Direction angle in degrees
+    Weather = "-1"
+    WindFileName = "-1"
+    DateFileName = "-1"
+    FoliarMoist = 100 # 50%
+    CalcMeth = 0    # 0 = Finney 1998, 1 = Scott & Reinhardt 2001
+    Res = -1.0
 
-  # #-----------------------------------------------
-  # #-----------------------------------------------
-  # def burn():
-  #   text = "Running FlamMap."
-  #   newProcess(text)
-
-  #   # Burn in FlamMap
-  #   #
-  #   flamMap = os.path.join(dll_path, "FlamMapF.dll")
-  #   dll = ctypes.cdll.LoadLibrary(flamMap)
-  #   fm = getattr(dll, "?Run@@YAHPBD000NN000HHN@Z")
-  #   fm.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_double, ctypes.c_double, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_int, ctypes.c_int, ctypes.c_double]
-  #   fm.restype = ctypes.c_int
-
-  #   Landscape = landscape_file
-  #   FuelMoist = fuel_moisture
-  #   OutputFile = os.path.join(outputs, "Burn")
-  #   FuelModel = "-1"
-  #   Windspeed = 30.0  # mph
-  #   WindDir = 0.0   # Direction angle in degrees
-  #   Weather = "-1"
-  #   WindFileName = "-1"
-  #   DateFileName = "-1"
-  #   FoliarMoist = 100 # 50%
-  #   CalcMeth = 0    # 0 = Finney 1998, 1 = Scott & Reinhardt 2001
-  #   Res = -1.0
-
-  #   e = fm(Landscape, FuelMoist, OutputFile, FuelModel, Windspeed, WindDir, Weather, WindFileName, DateFileName, FoliarMoist, CalcMeth, Res)
-  #   if e > 0:
-  #     arcpy.AddError("Problem with parameter {0}".format(e))
+    e = fm(Landscape, FuelMoist, OutputFile, FuelModel, Windspeed, WindDir, Weather, WindFileName, DateFileName, FoliarMoist, CalcMeth, Res)
+    if e > 0:
+      arcpy.AddError("Problem with parameter {0}".format(e))
 
 
-  #   for root, dirs, fm_outputs in os.walk(outputs): #Check to confirm outputs are saved here
-  #      for burn in fm_outputs:
-  #         if burn[-3:].lower() in burn_metrics:
-  #             metric = burn[-3:].lower()
-  #             burn_ascii = os.path.join(outputs, metric+".asc")
-  #             os.rename(os.path.join(outputs, burn), burn_ascii)
+    for root, dirs, fm_outputs in os.walk(outputs): #Check to confirm outputs are saved here
+       for burn in fm_outputs:
+          if burn[-3:].lower() in burn_metrics:
+              metric = burn[-3:].lower()
+              burn_ascii = os.path.join(outputs, metric+".asc")
+              os.rename(os.path.join(outputs, burn), burn_ascii)
 
-
-  #   text = "Burn complete."
-  #   generateMessage(text)
-  # if run_FlamMap == "Yes":
-  #   burn()
+  if run_FlamMap == "Yes":
+    burn()
 
   #-----------------------------------------------
   #-----------------------------------------------
   def burn_obia():
-    text = "Running OBIA on fire behavior metrics."
-    newProcess(text)
+
     # Set Cell Size
     arcpy.env.snapRaster = naip_5m
     cell_size = str(arcpy.GetRasterProperties_management(naip_1m, "CELLSIZEX", ""))
@@ -1219,7 +1267,7 @@ def measure_fire_behavior():
 
       #-----------------------------------------------
       #-----------------------------------------------
-      text = "Calculating and joining max " + metric + " to each object."
+      text = "Assigning " + metric + " values to each object."
       generateMessage(text)
       #-----------------------------------------------
       #Set variables
@@ -1237,13 +1285,13 @@ def measure_fire_behavior():
       arcpy.DefineProjection_management(raw_raster, projection)
 
       if metric == "fli":
-        unit_scalar = 1#0.288894658
+        unit_scalar = 0.288894658
       elif metric == "fml":
         unit_scalar = 1
       elif metric == "ros":
-        unit_scalar = 1#3.28084
+        unit_scalar = 3.28084
       elif metric == "fi":
-        unit_scalar = 1#3.28084
+        unit_scalar = 3.28084
 
       this = Raster(raw_raster)*unit_scalar
       this.save(scaled_raster)

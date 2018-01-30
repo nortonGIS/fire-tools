@@ -43,11 +43,19 @@ def get_fuels(bioregion):
     spectral_detail, spatial_detail, min_seg_size = 20, 20, 1
     details.extend([[landcover, fuelmodel, cm_heights, [spectral_detail, spatial_detail, min_seg_size]]])
 
-    landcover = "nonburnable"
-    fuelmodel = "99"
-    cm_heights = ["", ""]
+    cover = "impervious"
+    landcover = "pavement"
+    fuelmodel = "98"
+    cm_heights = [0, 60.96]
     spectral_detail, spatial_detail, min_seg_size = "", "",""
-    details.extend([[landcover, fuelmodel, cm_heights, [spectral_detail, spatial_detail, min_seg_size]]])
+    details.extend([[cover, landcover, fuelmodel, cm_heights, [spectral_detail, spatial_detail, min_seg_size]]])
+
+    cover = "impervious"
+    landcover = "building"
+    fuelmodel = "99"
+    cm_heights = [60.96, 10000]
+    spectral_detail, spatial_detail, min_seg_size = "", "",""
+    details.extend([[cover, landcover, fuelmodel, cm_heights, [spectral_detail, spatial_detail, min_seg_size]]])
 
   elif bioregion == "CA_Oak_Woodlands":
     cover = "vegetation"
@@ -110,11 +118,19 @@ def get_fuels(bioregion):
     spectral_detail, spatial_detail, min_seg_size = 20, 20, 1
     details.extend([[landcover, fuelmodel, cm_heights, [spectral_detail, spatial_detail, min_seg_size]]])
 
-    landcover = "nonburnable"
-    fuelmodel = "99"
-    cm_heights = ["", ""]
+    cover = "impervious"
+    landcover = "pavement"
+    fuelmodel = "98"
+    cm_heights = [0, 60.96]
     spectral_detail, spatial_detail, min_seg_size = "", "",""
-    details.extend([[landcover, fuelmodel, cm_heights, [spectral_detail, spatial_detail, min_seg_size]]])
+    details.extend([[cover, landcover, fuelmodel, cm_heights, [spectral_detail, spatial_detail, min_seg_size]]])
+
+    cover = "impervious"
+    landcover = "building"
+    fuelmodel = "99"
+    cm_heights = [60.96, 10000]
+    spectral_detail, spatial_detail, min_seg_size = "", "",""
+    details.extend([[cover, landcover, fuelmodel, cm_heights, [spectral_detail, spatial_detail, min_seg_size]]])
 
   return details
 
@@ -122,17 +138,17 @@ def get_thresholds(bioregion, spectral_index):
   
   if bioregion == "Sierra_Nevada_Mountains":
     if spectral_index == "ndvi":
-      imp = "-880 <= x <= -120"
-      veg = "-10 <= x <= 600"
+      imp = [-1000, -120]
+      veg = [-10, 600]
     elif spectral_index == "ndwi":
-        imp = "-20 <= x <= 910"
-        veg = "-460 <= x <= -30"
+        imp = [-20, 1000]
+        veg = [-1000, -30]
     elif spectral_index == "gndvi":
-        imp = "-940<= x <= -50" 
-        veg = "-20 <= x <= 380" 
+        imp = [-1000, -50]
+        veg = [-20, 1000]
     elif spectral_index == "osavi":
-        imp = "-940 <= x <= -130" 
-        veg = "-80 <= x <= 760" 
+        imp = [-1000, -130]
+        veg = [-80, 760]
 
   elif bioregion == "CA_Oak_Woodlands":
     if spectral_index == "ndvi":
@@ -150,17 +166,17 @@ def get_thresholds(bioregion, spectral_index):
 
   elif bioregion == "SoCal_Mountains":
     if spectral_index == "ndvi":
-      imp = "-1000 <= x <= 0"
-      veg = "0<= x <= 1000"  
+      imp = [-1000, 0]
+      veg = [0, 1000]
     elif spectral_index == "ndwi":
-      veg = "-1000 <= x <= 0"
-      imp = "0<= x <= 1000" 
+      veg = [-1000, 0]
+      imp = [0, -1000]
     elif spectral_index == "gndvi":
-      imp = "-1000 <= x <= 0"
-      veg = "0<= x <= 1000" 
+      imp = [-1000, 0]
+      veg = [0, 1000]
     elif spectral_index == "osavi":
-      imp = "-1000 <= x <= 400"
-      veg = "400 <= x <= 1000"
+      imp = [-1000, 400]
+      veg = [400, 1000]
 
   return [spectral_index, imp, veg]
 
